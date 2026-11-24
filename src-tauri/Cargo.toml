@@ -1,6 +1,6 @@
 [package]
 name = "domain_tools"
-version = "0.1.0"
+version = "0.1.4"
 description = "Desktop DNS, WHOIS, subdomain, website stack, and domain health toolkit"
 authors = ["NRS"]
 edition = "2021"
