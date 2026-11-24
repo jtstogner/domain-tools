@@ -823,6 +823,8 @@ export function App() {
                     report={report}
                     selectedResolverId={selectedResolverId}
                     onSelectResolverId={setSelectedResolverId}
+                    historyDomains={history.map((h) => h.domain)}
+                    customResolver={customResolver}
                     onNotify={notify}
                   />
                 )}

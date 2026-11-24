@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import type {
   BulkDomainResult,
+  DnsOnlyResult,
   DnsQueryReport,
   MonitorProbeRequest,
   MonitorProbeResult,
@@ -53,6 +54,20 @@ export async function pingEndpoint(
   request: MonitorProbeRequest,
 ): Promise<MonitorProbeResult> {
   return invoke<MonitorProbeResult>("ping_endpoint", { request });
+}
+
+export async function queryDnsOnly(
+  domain: string,
+  recordTypes: string[],
+  resolverId: string,
+  customResolver?: string | null,
+): Promise<DnsOnlyResult> {
+  return invoke<DnsOnlyResult>("query_dns_only", {
+    domain,
+    recordTypes,
+    resolverId,
+    customResolver: customResolver?.trim() || null,
+  });
 }
 
 export async function saveExport(

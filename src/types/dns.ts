@@ -448,6 +448,11 @@ export interface QueryProgressEvent {
   elapsed_ms: number | null;
 }
 
+export interface DnsOnlyResult {
+  domain: string;
+  resolver: ResolverResult;
+}
+
 export interface DnsQueryReport {
   domain: string;
   queried_at: string;

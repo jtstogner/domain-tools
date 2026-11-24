@@ -493,6 +493,12 @@ pub struct QueryProgressEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsOnlyResult {
+    pub domain: String,
+    pub resolver: ResolverResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsQueryReport {
     pub domain: String,
     pub queried_at: String,

@@ -13,6 +13,7 @@ pub fn run() {
             commands::trace_redirects,
             commands::run_bulk_check,
             commands::ping_endpoint,
+            commands::query_dns_only,
             commands::save_export_file
         ])
         .run(tauri::generate_context!())

@@ -24,7 +24,7 @@ use hickory_resolver::proto::rr::{RData, Record, RecordType};
 use hickory_resolver::{ResolveError, Resolver, TokioResolver};
 
 use crate::models::{
-    DnsQueryReport, DnsRecordItem, PropagationRow, QueryProgressEvent, QueryRequest,
+    DnsOnlyResult, DnsQueryReport, DnsRecordItem, PropagationRow, QueryProgressEvent, QueryRequest,
     RecordTypeResult, ResolverResult,
 };
 
@@ -714,6 +714,72 @@ where
     })
 }
 
+pub async fn execute_dns_only(
+    domain: String,
+    record_types: Vec<String>,
+    resolver_id: String,
+    custom_resolver: Option<String>,
+) -> Result<DnsOnlyResult, String> {
+    let domain = normalize_domain(&domain)?;
+    let fqdn = format!("{domain}.");
+
+    let raw_types: Vec<String> = if record_types.is_empty() {
+        DEFAULT_RECORD_TYPES.iter().map(|s| s.to_string()).collect()
+    } else {
+        record_types
+    };
+
+    let mut parsed_types = Vec::with_capacity(raw_types.len());
+    let mut seen_types = Vec::with_capacity(raw_types.len());
+    for t in &raw_types {
+        let upper = t.trim().to_ascii_uppercase();
+        if upper.is_empty() || upper == "DMARC" || seen_types.contains(&upper) {
+            continue;
+        }
+        let rtype = parse_record_type(&upper)?;
+        seen_types.push(upper);
+        parsed_types.push((t.trim().to_ascii_uppercase(), rtype));
+    }
+
+    let res_id = {
+        let lower = resolver_id.trim().to_ascii_lowercase();
+        if lower.is_empty() {
+            "cloudflare".to_string()
+        } else {
+            lower
+        }
+    };
+
+    let dmarc_fqdn = format!("_dmarc.{domain}.");
+    let custom_ref = custom_resolver.as_deref();
+    let dmarc_fut = async {
+        match build_resolver(&res_id, custom_ref, false) {
+            Ok((_, _, r)) => query_record_type(&r, &dmarc_fqdn, "DMARC", RecordType::TXT).await,
+            Err(err) => RecordTypeResult {
+                record_type: "DMARC".to_string(),
+                status: "error".to_string(),
+                latency_ms: 0,
+                records: vec![],
+                error: Some(err),
+            },
+        }
+    };
+
+    let (mut resolver, dmarc_result) = tokio::join!(
+        query_with_resolver(
+            res_id.clone(),
+            fqdn,
+            parsed_types,
+            custom_resolver.clone(),
+        ),
+        dmarc_fut
+    );
+
+    resolver.results.push(dmarc_result);
+
+    Ok(DnsOnlyResult { domain, resolver })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -834,5 +900,26 @@ mod tests {
         assert!(report.health.score >= 70);
         assert!(report.subdomains.live_count > 0);
         assert!(report.ports.open_count > 0);
+    }
+
+    #[tokio::test]
+    async fn test_execute_dns_only_validation() {
+        let bad_domain = execute_dns_only(
+            "invalid..domain".to_string(),
+            vec!["A".to_string()],
+            "cloudflare".to_string(),
+            None,
+        )
+        .await;
+        assert!(bad_domain.is_err());
+
+        let bad_type = execute_dns_only(
+            "example.com".to_string(),
+            vec!["NOTATYPE".to_string()],
+            "cloudflare".to_string(),
+            None,
+        )
+        .await;
+        assert!(bad_type.is_err());
     }
 }

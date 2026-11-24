@@ -2,8 +2,8 @@ use tauri::Emitter;
 
 use crate::dns;
 use crate::models::{
-    BulkDomainResult, DnsQueryReport, MonitorProbeRequest, MonitorProbeResult, PortScanReport,
-    QueryRequest, RedirectReport, TlsReport,
+    BulkDomainResult, DnsOnlyResult, DnsQueryReport, MonitorProbeRequest, MonitorProbeResult,
+    PortScanReport, QueryRequest, RedirectReport, TlsReport,
 };
 
 #[tauri::command]
@@ -53,6 +53,16 @@ pub async fn run_bulk_check(
 #[tauri::command]
 pub async fn ping_endpoint(request: MonitorProbeRequest) -> Result<MonitorProbeResult, String> {
     Ok(dns::monitor::probe_endpoint(request).await)
+}
+
+#[tauri::command]
+pub async fn query_dns_only(
+    domain: String,
+    record_types: Vec<String>,
+    resolver_id: String,
+    custom_resolver: Option<String>,
+) -> Result<DnsOnlyResult, String> {
+    dns::execute_dns_only(domain, record_types, resolver_id, custom_resolver).await
 }
 
 #[tauri::command]
