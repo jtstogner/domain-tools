@@ -84,11 +84,11 @@ export function QueryBar({
   return (
     <form
       onSubmit={handleFormSubmit}
-      className="rounded-xl border border-slate-800 bg-[#111827] p-4 shadow-lg shadow-black/30"
+      className="rounded-xl border border-line bg-surface p-4 shadow-sm shadow-slate-900/5 dark:shadow-lg dark:shadow-black/30"
     >
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
         <div className="relative flex-1">
-          <Globe className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+          <Globe className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted" />
           <input
             ref={inputRef}
             type="text"
@@ -98,7 +98,7 @@ export function QueryBar({
             spellCheck={false}
             autoCapitalize="none"
             autoComplete="off"
-            className="w-full rounded-lg border border-slate-700 bg-[#0b0f17] py-2.5 pl-10 pr-4 font-mono text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
+            className="w-full rounded-lg border border-line-strong bg-canvas py-2.5 pl-10 pr-4 font-mono text-sm text-ink placeholder:text-ink-muted/70 focus:border-sky-500 focus:outline-none focus:ring-2 focus:ring-sky-500/20"
           />
         </div>
 
@@ -108,8 +108,8 @@ export function QueryBar({
             onClick={() => setShowAdvanced((v) => !v)}
             className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2.5 text-xs font-medium transition ${
               showAdvanced
-                ? "border-sky-500/60 bg-sky-500/10 text-sky-300"
-                : "border-slate-700 bg-slate-800/60 text-slate-300 hover:border-slate-600 hover:text-white"
+                ? "border-sky-500/60 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                : "border-line-strong bg-surface-alt text-ink-secondary hover:border-slate-400 hover:text-ink dark:hover:border-slate-600"
             }`}
           >
             <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -119,7 +119,7 @@ export function QueryBar({
           <button
             type="submit"
             disabled={loading || !domain.trim()}
-            className="inline-flex items-center gap-2 rounded-lg bg-sky-500 px-5 py-2.5 text-sm font-semibold text-slate-950 transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400"
           >
             {loading ? (
               <>
@@ -136,9 +136,9 @@ export function QueryBar({
         </div>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800/80 pt-3">
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-3">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">
+          <span className="mr-1 text-[11px] font-medium uppercase tracking-wider text-ink-muted">
             Types:
           </span>
           {ALL_RECORD_TYPES.map((type) => {
@@ -150,8 +150,8 @@ export function QueryBar({
                 onClick={() => toggleRecordType(type)}
                 className={`rounded-md border px-2 py-1 font-mono text-xs font-medium transition ${
                   active
-                    ? "border-sky-500/60 bg-sky-500/15 text-sky-300"
-                    : "border-slate-800 bg-[#0b0f17] text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                    ? "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300"
+                    : "border-line bg-canvas text-ink-muted hover:border-line-strong hover:text-ink"
                 }`}
               >
                 {type}
@@ -161,14 +161,14 @@ export function QueryBar({
           <button
             type="button"
             onClick={() => onRecordTypesChange(ALL_RECORD_TYPES)}
-            className="ml-1 text-xs text-slate-400 hover:text-sky-300"
+            className="ml-1 text-xs text-ink-muted hover:text-sky-600 dark:hover:text-sky-300"
           >
             All
           </button>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="mr-1 text-[11px] font-medium uppercase tracking-wider text-slate-400">
+          <span className="mr-1 text-[11px] font-medium uppercase tracking-wider text-ink-muted">
             Resolvers:
           </span>
           {BUILTIN_RESOLVERS.map((res) => {
@@ -181,8 +181,8 @@ export function QueryBar({
                 title={res.ip}
                 className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
                   active
-                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-300"
-                    : "border-slate-800 bg-[#0b0f17] text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                    ? "border-emerald-500/50 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                    : "border-line bg-canvas text-ink-muted hover:border-line-strong hover:text-ink"
                 }`}
               >
                 {res.label}
@@ -193,9 +193,9 @@ export function QueryBar({
       </div>
 
       {showAdvanced && (
-        <div className="mt-3 grid grid-cols-1 gap-3 border-t border-slate-800/80 pt-3 md:grid-cols-2">
+        <div className="mt-3 grid grid-cols-1 gap-3 border-t border-line pt-3 md:grid-cols-2">
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-300">
+            <label className="mb-1 block text-xs font-medium text-ink-secondary">
               Custom DNS Resolver IP (optional)
             </label>
             <input
@@ -203,11 +203,11 @@ export function QueryBar({
               value={customResolver}
               onChange={(e) => onCustomResolverChange(e.target.value)}
               placeholder="e.g. 94.140.14.14 or 1.1.1.1:53"
-              className="w-full rounded-lg border border-slate-700 bg-[#0b0f17] px-3 py-2 font-mono text-xs text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
+              className="w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-muted/70 focus:border-sky-500 focus:outline-none"
             />
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-300">
+            <label className="mb-1 block text-xs font-medium text-ink-secondary">
               DKIM Selectors (comma-separated, optional)
             </label>
             <input
@@ -215,13 +215,13 @@ export function QueryBar({
               value={dkimSelectorsInput}
               onChange={(e) => onDkimSelectorsInputChange(e.target.value)}
               placeholder="Leave blank for auto-probe (google, selector1, k1, default...)"
-              className="w-full rounded-lg border border-slate-700 bg-[#0b0f17] px-3 py-2 font-mono text-xs text-slate-100 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
+              className="w-full rounded-lg border border-line-strong bg-canvas px-3 py-2 font-mono text-xs text-ink placeholder:text-ink-muted/70 focus:border-sky-500 focus:outline-none"
             />
           </div>
         </div>
       )}
 
-      <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+      <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs text-ink-muted">
         <span>Quick examples:</span>
         {SAMPLE_DOMAINS.map((sample) => (
           <button
@@ -231,7 +231,7 @@ export function QueryBar({
               onDomainChange(sample);
               onSubmit(sample);
             }}
-            className="rounded border border-slate-800 bg-[#0b0f17] px-2 py-0.5 font-mono text-[11px] text-slate-400 transition hover:border-slate-700 hover:text-sky-300"
+            className="rounded border border-line bg-canvas px-2 py-0.5 font-mono text-[11px] text-ink-muted transition hover:border-line-strong hover:text-sky-600 dark:hover:text-sky-300"
           >
             {sample}
           </button>

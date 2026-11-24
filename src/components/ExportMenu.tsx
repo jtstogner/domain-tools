@@ -62,54 +62,54 @@ export function ExportMenu({
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs font-medium text-slate-200 transition hover:border-sky-500/50 hover:text-white"
+        className="inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface-alt px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:border-sky-500/50 hover:text-ink"
       >
-        <Download className="h-3.5 w-3.5 text-sky-400" />
+        <Download className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
         Export
-        <ChevronDown className="h-3.5 w-3.5 text-slate-400" />
+        <ChevronDown className="h-3.5 w-3.5 text-ink-muted" />
       </button>
 
       {open && (
-        <div className="absolute right-0 z-30 mt-1.5 w-52 overflow-hidden rounded-xl border border-slate-700 bg-[#111827] py-1 shadow-xl shadow-black/50">
+        <div className="absolute right-0 z-30 mt-1.5 w-52 overflow-hidden rounded-xl border border-line-strong bg-surface py-1 shadow-xl shadow-slate-900/10 dark:shadow-black/50">
           <button
             type="button"
             onClick={() => handleSave("json")}
-            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-slate-800"
+            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
           >
-            <FileJson className="h-3.5 w-3.5 text-sky-400" />
+            <FileJson className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
             Save as JSON (.json)
           </button>
           <button
             type="button"
             onClick={() => handleSave("csv")}
-            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-slate-800"
+            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
           >
-            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-400" />
+            <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
             Save as CSV (.csv)
           </button>
           <button
             type="button"
             onClick={() => handleSave("zone")}
-            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-slate-800"
+            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
           >
-            <FileCode2 className="h-3.5 w-3.5 text-amber-400" />
+            <FileCode2 className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
             Save Zone File (.zone)
           </button>
-          <div className="my-1 border-t border-slate-800" />
+          <div className="my-1 border-t border-line" />
           <button
             type="button"
             onClick={() => handleCopy("zone")}
-            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-slate-800"
+            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
           >
-            <Copy className="h-3.5 w-3.5 text-slate-400" />
+            <Copy className="h-3.5 w-3.5 text-ink-muted" />
             Copy Zone Output
           </button>
           <button
             type="button"
             onClick={() => handleCopy("json")}
-            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-slate-200 hover:bg-slate-800"
+            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
           >
-            <Copy className="h-3.5 w-3.5 text-slate-400" />
+            <Copy className="h-3.5 w-3.5 text-ink-muted" />
             Copy JSON Report
           </button>
         </div>

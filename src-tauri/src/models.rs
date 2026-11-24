@@ -278,14 +278,233 @@ pub struct SubdomainDiscoveryReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortScanItem {
+    pub port: u16,
+    pub service: String,
+    pub category: String,
+    /// "open" | "closed" | "filtered" | "error"
+    pub status: String,
+    pub latency_ms: u64,
+    pub banner: Option<String>,
+    /// "normal" | "caution" | "high"
+    pub risk_level: String,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortScanReport {
+    pub target_host: String,
+    pub target_ip: Option<String>,
+    pub available_ips: Vec<String>,
+    pub open_count: usize,
+    pub closed_count: usize,
+    pub filtered_count: usize,
+    pub total_checked: usize,
+    pub latency_ms: u64,
+    pub ports: Vec<PortScanItem>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsCertInfo {
+    pub subject: String,
+    pub common_name: Option<String>,
+    pub issuer: String,
+    pub issuer_org: Option<String>,
+    pub sans: Vec<String>,
+    pub not_before: String,
+    pub not_after: String,
+    pub days_remaining: i64,
+    pub serial_hex: String,
+    pub signature_algorithm: String,
+    pub public_key_algorithm: String,
+    pub public_key_bits: Option<u32>,
+    pub sha256_fingerprint: String,
+    pub is_ca: bool,
+    pub is_self_signed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsReport {
+    pub status: String,
+    pub host: String,
+    pub port: u16,
+    pub starttls: Option<String>,
+    pub protocol_version: Option<String>,
+    pub cipher_suite: Option<String>,
+    pub chain_valid: bool,
+    pub hostname_match: bool,
+    pub verification_error: Option<String>,
+    pub days_remaining: Option<i64>,
+    pub handshake_ms: u64,
+    pub certificates: Vec<TlsCertInfo>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpNetworkInfo {
+    pub ip: String,
+    pub ip_version: String,
+    pub roles: Vec<String>,
+    pub hostnames: Vec<String>,
+    pub ptr_records: Vec<String>,
+    pub asn: Option<u32>,
+    pub as_org: Option<String>,
+    pub cidr: Option<String>,
+    pub country: Option<String>,
+    pub country_code: Option<String>,
+    pub region: Option<String>,
+    pub city: Option<String>,
+    pub isp: Option<String>,
+    pub provider_type: String,
+    pub provider_name: Option<String>,
+    pub is_anycast_cdn: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkReport {
+    pub status: String,
+    pub latency_ms: u64,
+    pub ips: Vec<IpNetworkInfo>,
+    pub unique_asns: usize,
+    pub countries: Vec<String>,
+    pub cdn_detected: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedirectHop {
+    pub hop_index: usize,
+    pub url: String,
+    pub status_code: u16,
+    pub status_text: String,
+    pub location: Option<String>,
+    pub resolved_next_url: Option<String>,
+    pub latency_ms: u64,
+    pub server: Option<String>,
+    pub hsts: Option<String>,
+    pub cache_control: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimingWaterfall {
+    pub target_url: String,
+    pub dns_ms: u64,
+    pub tcp_ms: u64,
+    pub tls_ms: Option<u64>,
+    pub ttfb_ms: u64,
+    pub total_ms: u64,
+    pub http_status: Option<u16>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedirectChain {
+    pub label: String,
+    pub start_url: String,
+    pub final_url: String,
+    pub final_status: Option<u16>,
+    pub hop_count: usize,
+    pub total_ms: u64,
+    pub has_loop: bool,
+    pub hops: Vec<RedirectHop>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RedirectReport {
+    pub status: String,
+    pub canonical_url: Option<String>,
+    pub http_to_https: bool,
+    pub canonical_consistent: bool,
+    pub hsts_present: bool,
+    pub hsts_max_age: Option<u64>,
+    pub hsts_include_subdomains: bool,
+    pub hsts_preload: bool,
+    pub chains: Vec<RedirectChain>,
+    pub waterfall: Option<TimingWaterfall>,
+    pub issues: Vec<String>,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkDomainResult {
+    pub domain: String,
+    pub status: String,
+    pub a_records: Vec<String>,
+    pub mx_count: usize,
+    pub ns_count: usize,
+    pub http_status: Option<u16>,
+    pub http_latency_ms: Option<u64>,
+    pub final_url: Option<String>,
+    pub ssl_valid: Option<bool>,
+    pub ssl_days_remaining: Option<i64>,
+    pub ssl_issuer: Option<String>,
+    pub spf_status: String,
+    pub dmarc_status: String,
+    pub dnssec_status: String,
+    pub registrar: Option<String>,
+    pub domain_expiry_date: Option<String>,
+    pub domain_days_remaining: Option<i64>,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkProgressEvent {
+    pub completed: usize,
+    pub total: usize,
+    pub result: BulkDomainResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorProbeRequest {
+    pub target: String,
+    pub mode: String,
+    pub port: Option<u16>,
+    pub resolver: Option<String>,
+    pub record_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorProbeResult {
+    pub timestamp: String,
+    pub mode: String,
+    pub target: String,
+    pub status: String,
+    pub total_ms: u64,
+    pub dns_ms: Option<u64>,
+    pub tcp_ms: Option<u64>,
+    pub tls_ms: Option<u64>,
+    pub ttfb_ms: Option<u64>,
+    pub http_status: Option<u16>,
+    pub resolved_values: Vec<String>,
+    pub summary: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryProgressEvent {
+    pub stage: String,
+    pub label: String,
+    pub status: String,
+    pub elapsed_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DnsQueryReport {
     pub domain: String,
     pub queried_at: String,
     pub resolvers: Vec<ResolverResult>,
     pub propagation: Vec<PropagationRow>,
     pub security: SecurityReport,
+    pub tls: TlsReport,
+    pub redirects: RedirectReport,
+    pub network: NetworkReport,
     pub whois: WhoisInfo,
     pub website: WebsiteInfo,
     pub health: DomainHealthReport,
     pub subdomains: SubdomainDiscoveryReport,
+    pub ports: PortScanReport,
 }

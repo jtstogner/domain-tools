@@ -4,15 +4,15 @@ import type { DnsQueryReport, DnsRecordItem } from "../types/dns";
 import { copyToClipboard } from "../lib/api";
 
 const TYPE_COLORS: Record<string, string> = {
-  A: "bg-sky-500/15 text-sky-300 border-sky-500/30",
-  AAAA: "bg-indigo-500/15 text-indigo-300 border-indigo-500/30",
-  CNAME: "bg-violet-500/15 text-violet-300 border-violet-500/30",
-  MX: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30",
-  TXT: "bg-amber-500/15 text-amber-300 border-amber-500/30",
-  NS: "bg-cyan-500/15 text-cyan-300 border-cyan-500/30",
-  SOA: "bg-rose-500/15 text-rose-300 border-rose-500/30",
-  CAA: "bg-fuchsia-500/15 text-fuchsia-300 border-fuchsia-500/30",
-  SRV: "bg-teal-500/15 text-teal-300 border-teal-500/30",
+  A: "bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/30",
+  AAAA: "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border-indigo-500/30",
+  CNAME: "bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/30",
+  MX: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
+  TXT: "bg-amber-500/15 text-amber-700 dark:text-amber-300 border-amber-500/30",
+  NS: "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 border-cyan-500/30",
+  SOA: "bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30",
+  CAA: "bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-300 border-fuchsia-500/30",
+  SRV: "bg-teal-500/15 text-teal-700 dark:text-teal-300 border-teal-500/30",
 };
 
 function formatTtl(seconds: number): string {
@@ -99,7 +99,7 @@ export function RecordsTable({
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-[#111827] p-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface p-3">
         <div className="flex flex-wrap items-center gap-1.5">
           {report.resolvers.map((res) => {
             const active = res.id === activeResolver.id;
@@ -110,17 +110,19 @@ export function RecordsTable({
                 onClick={() => onSelectResolverId(res.id)}
                 className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
                   active
-                    ? "border-sky-500/60 bg-sky-500/15 text-sky-200"
-                    : "border-slate-800 bg-[#0b0f17] text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                    ? "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-200"
+                    : "border-line bg-canvas text-ink-muted hover:border-line-strong hover:text-ink"
                 }`}
               >
                 <span
                   className={`h-2 w-2 rounded-full ${
-                    res.status === "ok" ? "bg-emerald-400" : "bg-rose-400"
+                    res.status === "ok"
+                      ? "bg-emerald-500 dark:bg-emerald-400"
+                      : "bg-rose-500 dark:bg-rose-400"
                   }`}
                 />
                 <span>{res.label}</span>
-                <span className="font-mono text-[11px] text-slate-400">
+                <span className="font-mono text-[11px] text-ink-muted">
                   {res.total_latency_ms}ms
                 </span>
               </button>
@@ -129,13 +131,13 @@ export function RecordsTable({
         </div>
 
         <div className="relative w-full sm:w-64">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-muted" />
           <input
             type="text"
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             placeholder="Filter records..."
-            className="w-full rounded-lg border border-slate-700 bg-[#0b0f17] py-1.5 pl-8 pr-3 text-xs text-slate-200 placeholder:text-slate-500 focus:border-sky-500 focus:outline-none"
+            className="w-full rounded-lg border border-line-strong bg-canvas py-1.5 pl-8 pr-3 text-xs text-ink placeholder:text-ink-muted/70 focus:border-sky-500 focus:outline-none"
           />
         </div>
       </div>
@@ -146,8 +148,8 @@ export function RecordsTable({
           onClick={() => setTypeFilter("ALL")}
           className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
             typeFilter === "ALL"
-              ? "border-sky-500/60 bg-sky-500/15 text-sky-300"
-              : "border-slate-800 bg-[#111827] text-slate-400 hover:text-slate-200"
+              ? "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300"
+              : "border-line bg-surface text-ink-muted hover:text-ink"
           }`}
         >
           All ({totalRecords})
@@ -162,8 +164,8 @@ export function RecordsTable({
               onClick={() => setTypeFilter(r.record_type)}
               className={`rounded-md border px-2.5 py-1 font-mono text-xs font-medium transition ${
                 active
-                  ? "border-sky-500/60 bg-sky-500/15 text-sky-300"
-                  : "border-slate-800 bg-[#111827] text-slate-400 hover:text-slate-200"
+                  ? "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300"
+                  : "border-line bg-surface text-ink-muted hover:text-ink"
               }`}
             >
               {r.record_type} ({count})
@@ -173,13 +175,13 @@ export function RecordsTable({
       </div>
 
       {activeResolver.status === "error" && (
-        <div className="flex items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
+        <div className="flex items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-900 dark:text-rose-200">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />
           <div>
             <div className="font-semibold">
               Resolver {activeResolver.label} ({activeResolver.address}) failed
             </div>
-            <div className="mt-0.5 text-xs text-rose-300/90">
+            <div className="mt-0.5 text-xs text-rose-800 dark:text-rose-300/90">
               {activeResolver.error ?? "All record queries errored."}
             </div>
           </div>
@@ -187,11 +189,11 @@ export function RecordsTable({
       )}
 
       {isNxDomain && (
-        <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
-          <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+        <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-900 dark:text-amber-200">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
           <div>
             <div className="font-semibold">NXDOMAIN — Domain Does Not Exist</div>
-            <div className="mt-0.5 text-xs text-amber-300/90">
+            <div className="mt-0.5 text-xs text-amber-800 dark:text-amber-300/90">
               {activeResolver.label} reported that{" "}
               <span className="font-mono">{report.domain}</span> does not exist.
             </div>
@@ -200,7 +202,7 @@ export function RecordsTable({
       )}
 
       {!activeResolver.error && errorResults.length > 0 && (
-        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">
+        <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-900 dark:text-rose-200">
           {errorResults.map((er) => (
             <div key={er.record_type}>
               <span className="font-mono font-semibold">{er.record_type}:</span>{" "}
@@ -210,16 +212,16 @@ export function RecordsTable({
         </div>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-slate-800 bg-[#111827]">
+      <div className="overflow-hidden rounded-xl border border-line bg-surface">
         {rows.length === 0 ? (
-          <div className="px-6 py-12 text-center text-sm text-slate-400">
+          <div className="px-6 py-12 text-center text-sm text-ink-muted">
             No matching DNS records returned for this selection.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left text-sm">
               <thead>
-                <tr className="border-b border-slate-800 bg-[#0d131f] text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <tr className="border-b border-line bg-surface-alt text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
                   <th className="px-4 py-3">Type</th>
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">TTL</th>
@@ -227,17 +229,17 @@ export function RecordsTable({
                   <th className="px-4 py-3 text-right">Copy</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/70">
+              <tbody className="divide-y divide-line">
                 {rows.map(({ record }, idx) => {
                   const rowKey = `${record.record_type}-${record.name}-${idx}`;
                   const badgeStyle =
                     TYPE_COLORS[record.record_type] ??
-                    "bg-slate-800 text-slate-300 border-slate-700";
+                    "bg-surface-alt text-ink-secondary border-line-strong";
 
                   return (
                     <tr
                       key={rowKey}
-                      className="transition hover:bg-slate-800/35"
+                      className="transition hover:bg-surface-alt/70"
                     >
                       <td className="whitespace-nowrap px-4 py-3 align-top">
                         <span
@@ -246,18 +248,18 @@ export function RecordsTable({
                           {record.record_type}
                         </span>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 align-top font-mono text-xs text-slate-300">
+                      <td className="whitespace-nowrap px-4 py-3 align-top font-mono text-xs text-ink-secondary">
                         {record.name}
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3 align-top font-mono text-xs text-slate-400">
+                      <td className="whitespace-nowrap px-4 py-3 align-top font-mono text-xs text-ink-muted">
                         {formatTtl(record.ttl)}
                       </td>
                       <td className="px-4 py-3 align-top">
-                        <div className="break-all font-mono text-xs leading-relaxed text-slate-100">
+                        <div className="break-all font-mono text-xs leading-relaxed text-ink">
                           {record.value}
                         </div>
                         {record.details && record.record_type === "SOA" && (
-                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
+                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-muted">
                             <span>Primary: {String(record.details.mname)}</span>
                             <span>Serial: {String(record.details.serial)}</span>
                             <span>Refresh: {String(record.details.refresh)}s</span>
@@ -266,13 +268,13 @@ export function RecordsTable({
                           </div>
                         )}
                         {record.details && record.record_type === "MX" && (
-                          <div className="mt-1 text-[11px] text-slate-400">
+                          <div className="mt-1 text-[11px] text-ink-muted">
                             Priority {String(record.details.priority)} →{" "}
                             {String(record.details.exchange)}
                           </div>
                         )}
                         {record.details && record.record_type === "SRV" && (
-                          <div className="mt-1 text-[11px] text-slate-400">
+                          <div className="mt-1 text-[11px] text-ink-muted">
                             Priority {String(record.details.priority)} · Weight{" "}
                             {String(record.details.weight)} · Port{" "}
                             {String(record.details.port)}
@@ -284,10 +286,10 @@ export function RecordsTable({
                           type="button"
                           onClick={() => handleCopy(rowKey, record.value)}
                           title="Copy value"
-                          className="inline-flex items-center justify-center rounded-md border border-slate-700/80 bg-slate-800/60 p-1.5 text-slate-300 transition hover:border-sky-500/50 hover:text-sky-300"
+                          className="inline-flex items-center justify-center rounded-md border border-line-strong bg-surface-alt p-1.5 text-ink-secondary transition hover:border-sky-500/50 hover:text-sky-600 dark:hover:text-sky-300"
                         >
                           {copiedKey === rowKey ? (
-                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                            <Check className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
                           ) : (
                             <Copy className="h-3.5 w-3.5" />
                           )}

@@ -1,6 +1,12 @@
+pub mod bulk;
 pub mod health;
+pub mod monitor;
+pub mod network;
+pub mod ports;
+pub mod redirects;
 pub mod security;
 pub mod subdomains;
+pub mod tls;
 pub mod website;
 pub mod whois;
 
@@ -18,7 +24,8 @@ use hickory_resolver::proto::rr::{RData, Record, RecordType};
 use hickory_resolver::{ResolveError, Resolver, TokioResolver};
 
 use crate::models::{
-    DnsQueryReport, DnsRecordItem, PropagationRow, QueryRequest, RecordTypeResult, ResolverResult,
+    DnsQueryReport, DnsRecordItem, PropagationRow, QueryProgressEvent, QueryRequest,
+    RecordTypeResult, ResolverResult,
 };
 
 const DEFAULT_RECORD_TYPES: &[&str] = &[
@@ -462,7 +469,29 @@ pub fn compute_propagation(
         .collect()
 }
 
+fn emit_stage<F>(cb: &F, stage: &str, label: &str, status: &str, elapsed_ms: Option<u64>)
+where
+    F: Fn(QueryProgressEvent),
+{
+    cb(QueryProgressEvent {
+        stage: stage.to_string(),
+        label: label.to_string(),
+        status: status.to_string(),
+        elapsed_ms,
+    });
+}
+
 pub async fn execute_query(request: QueryRequest) -> Result<DnsQueryReport, String> {
+    execute_query_with_progress(request, |_| {}).await
+}
+
+pub async fn execute_query_with_progress<F>(
+    request: QueryRequest,
+    on_progress: F,
+) -> Result<DnsQueryReport, String>
+where
+    F: Fn(QueryProgressEvent) + Send + Sync,
+{
     let domain = normalize_domain(&request.domain)?;
     let fqdn = format!("{domain}.");
 
@@ -521,24 +550,152 @@ pub async fn execute_query(request: QueryRequest) -> Result<DnsQueryReport, Stri
         .or_else(|_| build_resolver("google", None, false))
         .map(|(_, _, r)| r)?;
 
-    let (resolvers, security, whois, website, subdomains) = tokio::join!(
-        join_all(resolver_futs),
-        security::run_security_checks(&domain, &primary_for_sec, &request.dkim_selectors),
-        whois::lookup_whois(&domain),
-        website::inspect_website(&domain),
-        subdomains::discover_subdomains(&domain)
+    let (resolvers, security, tls, redirects, whois, website, subdomains) = tokio::join!(
+        async {
+            let t0 = std::time::Instant::now();
+            emit_stage(&on_progress, "dns", "DNS Records", "running", None);
+            let out = join_all(resolver_futs).await;
+            emit_stage(
+                &on_progress,
+                "dns",
+                "DNS Records",
+                "done",
+                Some(t0.elapsed().as_millis() as u64),
+            );
+            out
+        },
+        async {
+            let t0 = std::time::Instant::now();
+            emit_stage(&on_progress, "security", "Email & DNSSEC", "running", None);
+            let out =
+                security::run_security_checks(&domain, &primary_for_sec, &request.dkim_selectors)
+                    .await;
+            emit_stage(
+                &on_progress,
+                "security",
+                "Email & DNSSEC",
+                "done",
+                Some(t0.elapsed().as_millis() as u64),
+            );
+            out
+        },
+        async {
+            let t0 = std::time::Instant::now();
+            emit_stage(&on_progress, "tls", "SSL / TLS", "running", None);
+            let out = tls::inspect_tls(&domain, 443, None).await;
+            emit_stage(
+                &on_progress,
+                "tls",
+                "SSL / TLS",
+                "done",
+                Some(t0.elapsed().as_millis() as u64),
+            );
+            out
+        },
+        async {
+            let t0 = std::time::Instant::now();
+            emit_stage(&on_progress, "redirects", "Redirects & TTFB", "running", None);
+            let out = redirects::inspect_redirects(&domain).await;
+            emit_stage(
+                &on_progress,
+                "redirects",
+                "Redirects & TTFB",
+                "done",
+                Some(t0.elapsed().as_millis() as u64),
+            );
+            out
+        },
+        async {
+            let t0 = std::time::Instant::now();
+            emit_stage(&on_progress, "whois", "WHOIS & RDAP", "running", None);
+            let out = whois::lookup_whois(&domain).await;
+            emit_stage(
+                &on_progress,
+                "whois",
+                "WHOIS & RDAP",
+                "done",
+                Some(t0.elapsed().as_millis() as u64),
+            );
+            out
+        },
+        async {
+            let t0 = std::time::Instant::now();
+            emit_stage(&on_progress, "website", "Website Stack", "running", None);
+            let out = website::inspect_website(&domain).await;
+            emit_stage(
+                &on_progress,
+                "website",
+                "Website Stack",
+                "done",
+                Some(t0.elapsed().as_millis() as u64),
+            );
+            out
+        },
+        async {
+            let t0 = std::time::Instant::now();
+            emit_stage(&on_progress, "subdomains", "Subdomains", "running", None);
+            let out = subdomains::discover_subdomains(&domain).await;
+            emit_stage(
+                &on_progress,
+                "subdomains",
+                "Subdomains",
+                "done",
+                Some(t0.elapsed().as_millis() as u64),
+            );
+            out
+        }
     );
 
     let propagation = compute_propagation(&resolvers, &ordered_type_names);
-    let health = health::evaluate_domain_health(
-        &domain,
-        &resolvers,
-        &propagation,
-        &security,
-        &whois,
-        &website,
-    )
-    .await;
+    let (health, network, ports) = tokio::join!(
+        async {
+            let t0 = std::time::Instant::now();
+            emit_stage(&on_progress, "health", "Domain Health", "running", None);
+            let out = health::evaluate_domain_health(
+                &domain,
+                &resolvers,
+                &propagation,
+                &security,
+                &whois,
+                &website,
+            )
+            .await;
+            emit_stage(
+                &on_progress,
+                "health",
+                "Domain Health",
+                "done",
+                Some(t0.elapsed().as_millis() as u64),
+            );
+            out
+        },
+        async {
+            let t0 = std::time::Instant::now();
+            emit_stage(&on_progress, "network", "IP / ASN / PTR", "running", None);
+            let out = network::inspect_network(&domain, &resolvers).await;
+            emit_stage(
+                &on_progress,
+                "network",
+                "IP / ASN / PTR",
+                "done",
+                Some(t0.elapsed().as_millis() as u64),
+            );
+            out
+        },
+        async {
+            let t0 = std::time::Instant::now();
+            emit_stage(&on_progress, "ports", "Port Scan", "running", None);
+            let out = ports::scan_domain_ports(&domain, &resolvers).await;
+            emit_stage(
+                &on_progress,
+                "ports",
+                "Port Scan",
+                "done",
+                Some(t0.elapsed().as_millis() as u64),
+            );
+            out
+        }
+    );
 
     Ok(DnsQueryReport {
         domain,
@@ -546,10 +703,14 @@ pub async fn execute_query(request: QueryRequest) -> Result<DnsQueryReport, Stri
         resolvers,
         propagation,
         security,
+        tls,
+        redirects,
+        network,
         whois,
         website,
         health,
         subdomains,
+        ports,
     })
 }
 
@@ -672,5 +833,6 @@ mod tests {
         assert_eq!(report.health.blacklists_listed, 0);
         assert!(report.health.score >= 70);
         assert!(report.subdomains.live_count > 0);
+        assert!(report.ports.open_count > 0);
     }
 }

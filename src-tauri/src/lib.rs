@@ -8,6 +8,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::query_domain,
+            commands::scan_ports,
+            commands::inspect_tls,
+            commands::trace_redirects,
+            commands::run_bulk_check,
+            commands::ping_endpoint,
             commands::save_export_file
         ])
         .run(tauri::generate_context!())

@@ -1,6 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
-import type { DnsQueryReport, QueryRequest } from "../types/dns";
+import type {
+  BulkDomainResult,
+  DnsQueryReport,
+  MonitorProbeRequest,
+  MonitorProbeResult,
+  PortScanReport,
+  QueryRequest,
+  RedirectReport,
+  TlsReport,
+} from "../types/dns";
 
 function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -8,6 +17,42 @@ function isTauriRuntime(): boolean {
 
 export async function queryDomain(request: QueryRequest): Promise<DnsQueryReport> {
   return invoke<DnsQueryReport>("query_domain", { request });
+}
+
+export async function scanPorts(
+  target: string,
+  customPorts?: number[],
+): Promise<PortScanReport> {
+  return invoke<PortScanReport>("scan_ports", {
+    target,
+    customPorts: customPorts && customPorts.length > 0 ? customPorts : null,
+  });
+}
+
+export async function inspectTls(
+  host: string,
+  port = 443,
+  starttls?: string | null,
+): Promise<TlsReport> {
+  return invoke<TlsReport>("inspect_tls", {
+    host,
+    port,
+    starttls: starttls && starttls !== "auto" ? starttls : null,
+  });
+}
+
+export async function traceRedirects(target: string): Promise<RedirectReport> {
+  return invoke<RedirectReport>("trace_redirects", { target });
+}
+
+export async function runBulkCheck(domains: string[]): Promise<BulkDomainResult[]> {
+  return invoke<BulkDomainResult[]>("run_bulk_check", { domains });
+}
+
+export async function pingEndpoint(
+  request: MonitorProbeRequest,
+): Promise<MonitorProbeResult> {
+  return invoke<MonitorProbeResult>("ping_endpoint", { request });
 }
 
 export async function saveExport(

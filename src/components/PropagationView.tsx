@@ -5,28 +5,28 @@ function StatusBadge({ status }: { status: PropagationRow["status"] }) {
   switch (status) {
     case "consistent":
       return (
-        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-xs font-medium text-emerald-300">
+        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-300">
           <CheckCircle2 className="h-3.5 w-3.5" />
           Consistent
         </span>
       );
     case "divergent":
       return (
-        <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 px-2.5 py-0.5 text-xs font-medium text-amber-300">
+        <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 px-2.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
           <AlertTriangle className="h-3.5 w-3.5" />
           Divergent
         </span>
       );
     case "partial_error":
       return (
-        <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/40 bg-rose-500/15 px-2.5 py-0.5 text-xs font-medium text-rose-300">
+        <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/40 bg-rose-500/15 px-2.5 py-0.5 text-xs font-medium text-rose-700 dark:text-rose-300">
           <XCircle className="h-3.5 w-3.5" />
           Partial Error
         </span>
       );
     default:
       return (
-        <span className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-800/70 px-2.5 py-0.5 text-xs font-medium text-slate-400">
+        <span className="inline-flex items-center gap-1 rounded-full border border-line-strong bg-surface-alt px-2.5 py-0.5 text-xs font-medium text-ink-muted">
           <MinusCircle className="h-3.5 w-3.5" />
           No Records
         </span>
@@ -41,28 +41,28 @@ export function PropagationView({ report }: { report: DnsQueryReport }) {
         {report.resolvers.map((res) => (
           <div
             key={res.id}
-            className="rounded-xl border border-slate-800 bg-[#111827] p-3.5"
+            className="rounded-xl border border-line bg-surface p-3.5"
           >
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Server className="h-4 w-4 text-sky-400" />
-                <span className="text-sm font-semibold text-slate-100">
+                <Server className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+                <span className="text-sm font-semibold text-ink">
                   {res.label}
                 </span>
               </div>
               <span
                 className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
                   res.status === "ok"
-                    ? "bg-emerald-500/15 text-emerald-300"
-                    : "bg-rose-500/15 text-rose-300"
+                    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                    : "bg-rose-500/15 text-rose-700 dark:text-rose-300"
                 }`}
               >
                 {res.status === "ok" ? "Online" : "Error"}
               </span>
             </div>
-            <div className="mt-2 flex items-center justify-between text-xs text-slate-400">
+            <div className="mt-2 flex items-center justify-between text-xs text-ink-muted">
               <span className="font-mono">{res.address}</span>
-              <span className="font-mono text-sky-300">
+              <span className="font-mono text-sky-600 dark:text-sky-300">
                 {res.total_latency_ms}ms
               </span>
             </div>
@@ -70,34 +70,34 @@ export function PropagationView({ report }: { report: DnsQueryReport }) {
         ))}
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-slate-800 bg-[#111827]">
+      <div className="overflow-hidden rounded-xl border border-line bg-surface">
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-800 bg-[#0d131f] text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              <tr className="border-b border-line bg-surface-alt text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
                 <th className="px-4 py-3">Record</th>
                 <th className="px-4 py-3">Consensus</th>
                 {report.resolvers.map((res) => (
                   <th key={res.id} className="px-4 py-3">
                     <div>{res.label}</div>
-                    <div className="font-mono text-[10px] font-normal text-slate-500">
+                    <div className="font-mono text-[10px] font-normal text-ink-muted">
                       {res.address}
                     </div>
                   </th>
                 ))}
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/70">
+            <tbody className="divide-y divide-line">
               {report.propagation.map((row) => (
                 <tr
                   key={row.record_type}
                   className={
                     row.status === "divergent"
-                      ? "bg-amber-500/[0.04]"
-                      : "hover:bg-slate-800/30"
+                      ? "bg-amber-500/[0.06]"
+                      : "hover:bg-surface-alt/70"
                   }
                 >
-                  <td className="whitespace-nowrap px-4 py-3 align-top font-mono text-xs font-semibold text-sky-300">
+                  <td className="whitespace-nowrap px-4 py-3 align-top font-mono text-xs font-semibold text-sky-600 dark:text-sky-300">
                     {row.record_type}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 align-top">
@@ -114,17 +114,17 @@ export function PropagationView({ report }: { report: DnsQueryReport }) {
                         className="max-w-xs px-4 py-3 align-top"
                       >
                         {rStatus === "error" ? (
-                          <span className="text-rose-400">Query error</span>
+                          <span className="text-rose-600 dark:text-rose-400">Query error</span>
                         ) : rStatus === "nxdomain" ? (
-                          <span className="text-amber-300">NXDOMAIN</span>
+                          <span className="text-amber-700 dark:text-amber-300">NXDOMAIN</span>
                         ) : answers.length === 0 ? (
-                          <span className="text-slate-500">—</span>
+                          <span className="text-ink-muted">—</span>
                         ) : (
                           <div className="space-y-1">
                             {answers.map((ans, idx) => (
                               <div
                                 key={idx}
-                                className="break-all rounded bg-[#0b0f17] px-2 py-1 font-mono text-[11px] text-slate-200"
+                                className="break-all rounded bg-canvas px-2 py-1 font-mono text-[11px] text-ink"
                               >
                                 {ans}
                               </div>
@@ -132,7 +132,7 @@ export function PropagationView({ report }: { report: DnsQueryReport }) {
                           </div>
                         )}
                         {typeof latency === "number" && (
-                          <div className="mt-1 font-mono text-[10px] text-slate-500">
+                          <div className="mt-1 font-mono text-[10px] text-ink-muted">
                             {latency}ms
                           </div>
                         )}

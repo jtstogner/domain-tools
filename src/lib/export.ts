@@ -81,30 +81,65 @@ export function formatAsZoneFile(report: DnsQueryReport, resolverId?: string): s
   lines.push(`; DMARC:  [${report.security.dmarc.status.toUpperCase()}] ${report.security.dmarc.summary}`);
   lines.push(`; DKIM:   [${report.security.dkim.status.toUpperCase()}] ${report.security.dkim.summary}`);
   lines.push(`; DNSSEC: [${report.security.dnssec.status.toUpperCase()}] ${report.security.dnssec.summary}`);
-  lines.push("");
-  lines.push("; === WHOIS Summary ===");
-  lines.push(`; Domain:    ${report.whois.queried_domain}`);
-  lines.push(`; Registrar: ${report.whois.registrar ?? "N/A"}`);
-  lines.push(`; Created:   ${report.whois.created_date ?? "N/A"}`);
-  lines.push(`; Expires:   ${report.whois.expiry_date ?? "N/A"}`);
-  lines.push("");
-  lines.push("; === Website Stack Summary ===");
-  lines.push(`; Final URL: ${report.website.final_url ?? "N/A"}`);
-  lines.push(`; Status:    ${report.website.http_status ?? report.website.status}`);
-  lines.push(
-    `; Stack:     ${
-      report.website.technologies.length > 0
-        ? report.website.technologies.map((t) => (t.version ? `${t.name} v${t.version}` : t.name)).join(", ")
-        : "None detected"
-    }`,
-  );
-  lines.push("");
-  lines.push("; === Domain Health Summary ===");
-  lines.push(`; Score:      ${report.health.score}/100 (Grade ${report.health.grade}, ${report.health.overall_status})`);
-  lines.push(`; Spam:       ${report.health.spam_status.toUpperCase()} (${report.health.blacklists_listed}/${report.health.blacklists_checked} blacklists listed)`);
-  lines.push("");
-  lines.push("; === Discovered Subdomains ===");
-  lines.push(`; Total:      ${report.subdomains.total_found} (${report.subdomains.live_count} live in DNS, ${report.subdomains.ct_only_count} CT-only)`);
+  if (report.whois) {
+    lines.push("");
+    lines.push("; === WHOIS Summary ===");
+    lines.push(`; Domain:    ${report.whois.queried_domain}`);
+    lines.push(`; Registrar: ${report.whois.registrar ?? "N/A"}`);
+    lines.push(`; Created:   ${report.whois.created_date ?? "N/A"}`);
+    lines.push(`; Expires:   ${report.whois.expiry_date ?? "N/A"}`);
+  }
+  if (report.website) {
+    lines.push("");
+    lines.push("; === Website Stack Summary ===");
+    lines.push(`; Final URL: ${report.website.final_url ?? "N/A"}`);
+    lines.push(`; Status:    ${report.website.http_status ?? report.website.status}`);
+    lines.push(
+      `; Stack:     ${
+        report.website.technologies.length > 0
+          ? report.website.technologies.map((t) => (t.version ? `${t.name} v${t.version}` : t.name)).join(", ")
+          : "None detected"
+      }`,
+    );
+  }
+  if (report.health) {
+    lines.push("");
+    lines.push("; === Domain Health Summary ===");
+    lines.push(`; Score:      ${report.health.score}/100 (Grade ${report.health.grade}, ${report.health.overall_status})`);
+    lines.push(`; Spam:       ${report.health.spam_status.toUpperCase()} (${report.health.blacklists_listed}/${report.health.blacklists_checked} blacklists listed)`);
+  }
+  if (report.subdomains) {
+    lines.push("");
+    lines.push("; === Discovered Subdomains ===");
+    lines.push(`; Total:      ${report.subdomains.total_found} (${report.subdomains.live_count} live in DNS, ${report.subdomains.ct_only_count} CT-only)`);
+  }
+  if (report.ports) {
+    lines.push("");
+    lines.push("; === Open Ports ===");
+    lines.push(
+      `; Target IP:  ${report.ports.target_ip ?? "N/A"} (${report.ports.open_count}/${report.ports.total_checked} open)`,
+    );
+    const openPorts = report.ports.ports
+      .filter((p) => p.status === "open")
+      .map((p) => `${p.port}/${p.service}`);
+    if (openPorts.length > 0) {
+      lines.push(`; Open:       ${openPorts.join(", ")}`);
+    }
+  }
+  if (report.tls) {
+    lines.push("");
+    lines.push("; === SSL / TLS Summary ===");
+    lines.push(
+      `; TLS:        ${report.tls.protocol_version ?? "N/A"} | Chain valid: ${report.tls.chain_valid} | Host match: ${report.tls.hostname_match} | Days left: ${report.tls.days_remaining ?? "N/A"}`,
+    );
+  }
+  if (report.network) {
+    lines.push("");
+    lines.push("; === Network / ASN Summary ===");
+    lines.push(
+      `; Network:    ${report.network.ips.length} IPs | ${report.network.unique_asns} ASNs${report.network.cdn_detected ? ` | CDN: ${report.network.cdn_detected}` : ""}`,
+    );
+  }
 
   return lines.join("\n") + "\n";
 }

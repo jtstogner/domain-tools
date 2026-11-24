@@ -250,16 +250,218 @@ export interface SubdomainDiscoveryReport {
   subdomains: SubdomainItem[];
 }
 
+export interface PortScanItem {
+  port: number;
+  service: string;
+  category: string;
+  status: "open" | "closed" | "filtered" | "error";
+  latency_ms: number;
+  banner: string | null;
+  risk_level: "normal" | "caution" | "high";
+  note: string | null;
+}
+
+export interface PortScanReport {
+  target_host: string;
+  target_ip: string | null;
+  available_ips: string[];
+  open_count: number;
+  closed_count: number;
+  filtered_count: number;
+  total_checked: number;
+  latency_ms: number;
+  ports: PortScanItem[];
+  error: string | null;
+}
+
+export interface TlsCertInfo {
+  subject: string;
+  common_name: string | null;
+  issuer: string;
+  issuer_org: string | null;
+  sans: string[];
+  not_before: string;
+  not_after: string;
+  days_remaining: number;
+  serial_hex: string;
+  signature_algorithm: string;
+  public_key_algorithm: string;
+  public_key_bits: number | null;
+  sha256_fingerprint: string;
+  is_ca: boolean;
+  is_self_signed: boolean;
+}
+
+export interface TlsReport {
+  status: "ok" | "warning" | "error" | "unavailable";
+  host: string;
+  port: number;
+  starttls: string | null;
+  protocol_version: string | null;
+  cipher_suite: string | null;
+  chain_valid: boolean;
+  hostname_match: boolean;
+  verification_error: string | null;
+  days_remaining: number | null;
+  handshake_ms: number;
+  certificates: TlsCertInfo[];
+  error: string | null;
+}
+
+export interface IpNetworkInfo {
+  ip: string;
+  ip_version: "IPv4" | "IPv6";
+  roles: string[];
+  hostnames: string[];
+  ptr_records: string[];
+  asn: number | null;
+  as_org: string | null;
+  cidr: string | null;
+  country: string | null;
+  country_code: string | null;
+  region: string | null;
+  city: string | null;
+  isp: string | null;
+  provider_type: "CDN / Anycast" | "Cloud / Hosting" | "Mail Provider" | "Network";
+  provider_name: string | null;
+  is_anycast_cdn: boolean;
+}
+
+export interface NetworkReport {
+  status: string;
+  latency_ms: number;
+  ips: IpNetworkInfo[];
+  unique_asns: number;
+  countries: string[];
+  cdn_detected: string | null;
+  error: string | null;
+}
+
+export interface RedirectHop {
+  hop_index: number;
+  url: string;
+  status_code: number;
+  status_text: string;
+  location: string | null;
+  resolved_next_url: string | null;
+  latency_ms: number;
+  server: string | null;
+  hsts: string | null;
+  cache_control: string | null;
+}
+
+export interface TimingWaterfall {
+  target_url: string;
+  dns_ms: number;
+  tcp_ms: number;
+  tls_ms: number | null;
+  ttfb_ms: number;
+  total_ms: number;
+  http_status: number | null;
+  error: string | null;
+}
+
+export interface RedirectChain {
+  label: string;
+  start_url: string;
+  final_url: string;
+  final_status: number | null;
+  hop_count: number;
+  total_ms: number;
+  has_loop: boolean;
+  hops: RedirectHop[];
+  error: string | null;
+}
+
+export interface RedirectReport {
+  status: "ok" | "warning" | "error" | "unavailable";
+  canonical_url: string | null;
+  http_to_https: boolean;
+  canonical_consistent: boolean;
+  hsts_present: boolean;
+  hsts_max_age: number | null;
+  hsts_include_subdomains: boolean;
+  hsts_preload: boolean;
+  chains: RedirectChain[];
+  waterfall: TimingWaterfall | null;
+  issues: string[];
+  latency_ms: number;
+  error: string | null;
+}
+
+export interface BulkDomainResult {
+  domain: string;
+  status: "healthy" | "caution" | "issue" | "error";
+  a_records: string[];
+  mx_count: number;
+  ns_count: number;
+  http_status: number | null;
+  http_latency_ms: number | null;
+  final_url: string | null;
+  ssl_valid: boolean | null;
+  ssl_days_remaining: number | null;
+  ssl_issuer: string | null;
+  spf_status: string;
+  dmarc_status: string;
+  dnssec_status: string;
+  registrar: string | null;
+  domain_expiry_date: string | null;
+  domain_days_remaining: number | null;
+  latency_ms: number;
+  error: string | null;
+}
+
+export interface BulkProgressEvent {
+  completed: number;
+  total: number;
+  result: BulkDomainResult;
+}
+
+export interface MonitorProbeRequest {
+  target: string;
+  mode: "https" | "tcp" | "dns";
+  port?: number | null;
+  resolver?: string | null;
+  record_type?: string | null;
+}
+
+export interface MonitorProbeResult {
+  timestamp: string;
+  mode: "https" | "tcp" | "dns";
+  target: string;
+  status: "up" | "degraded" | "down";
+  total_ms: number;
+  dns_ms: number | null;
+  tcp_ms: number | null;
+  tls_ms: number | null;
+  ttfb_ms: number | null;
+  http_status: number | null;
+  resolved_values: string[];
+  summary: string;
+  error: string | null;
+}
+
+export interface QueryProgressEvent {
+  stage: string;
+  label: string;
+  status: "running" | "done";
+  elapsed_ms: number | null;
+}
+
 export interface DnsQueryReport {
   domain: string;
   queried_at: string;
   resolvers: ResolverResult[];
   propagation: PropagationRow[];
   security: SecurityReport;
+  tls: TlsReport;
+  redirects: RedirectReport;
+  network: NetworkReport;
   whois: WhoisInfo;
   website: WebsiteInfo;
   health: DomainHealthReport;
   subdomains: SubdomainDiscoveryReport;
+  ports: PortScanReport;
 }
 
 export interface HistoryEntry {

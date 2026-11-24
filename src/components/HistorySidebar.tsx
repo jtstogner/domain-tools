@@ -4,13 +4,13 @@ import type { HistoryEntry } from "../types/dns";
 function dotColor(status: string): string {
   switch (status) {
     case "pass":
-      return "bg-emerald-400";
+      return "bg-emerald-500 dark:bg-emerald-400";
     case "warn":
-      return "bg-amber-400";
+      return "bg-amber-500 dark:bg-amber-400";
     case "fail":
-      return "bg-rose-400";
+      return "bg-rose-500 dark:bg-rose-400";
     default:
-      return "bg-slate-600";
+      return "bg-slate-400 dark:bg-slate-600";
   }
 }
 
@@ -33,25 +33,25 @@ export function HistorySidebar({
 }: HistorySidebarProps) {
   if (collapsed) {
     return (
-      <aside className="flex w-12 shrink-0 flex-col items-center border-r border-slate-800 bg-[#0e1420] py-3">
+      <aside className="flex w-12 shrink-0 flex-col items-center border-r border-line bg-chrome py-3">
         <button
           type="button"
           onClick={onToggleCollapse}
           title="Expand history"
-          className="rounded-lg border border-slate-800 bg-[#111827] p-2 text-slate-400 hover:text-slate-100"
+          className="rounded-lg border border-line bg-surface p-2 text-ink-muted hover:text-ink"
         >
           <ChevronRight className="h-4 w-4" />
         </button>
-        <History className="mt-4 h-4 w-4 text-slate-500" />
+        <History className="mt-4 h-4 w-4 text-ink-muted" />
       </aside>
     );
   }
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r border-slate-800 bg-[#0e1420]">
-      <div className="flex items-center justify-between border-b border-slate-800 px-3.5 py-3">
-        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-300">
-          <History className="h-3.5 w-3.5 text-sky-400" />
+    <aside className="flex w-64 shrink-0 flex-col border-r border-line bg-chrome">
+      <div className="flex items-center justify-between border-b border-line px-3.5 py-3">
+        <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-ink-secondary">
+          <History className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
           Recent Lookups
         </div>
         <div className="flex items-center gap-1">
@@ -60,7 +60,7 @@ export function HistorySidebar({
               type="button"
               onClick={onClearHistory}
               title="Clear history"
-              className="rounded p-1 text-slate-500 hover:bg-slate-800 hover:text-rose-300"
+              className="rounded p-1 text-ink-muted hover:bg-surface-alt hover:text-rose-600 dark:hover:text-rose-300"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -69,7 +69,7 @@ export function HistorySidebar({
             type="button"
             onClick={onToggleCollapse}
             title="Collapse sidebar"
-            className="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-slate-100"
+            className="rounded p-1 text-ink-muted hover:bg-surface-alt hover:text-ink"
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
@@ -78,7 +78,7 @@ export function HistorySidebar({
 
       <div className="flex-1 overflow-y-auto p-2">
         {history.length === 0 ? (
-          <div className="px-2 py-6 text-center text-xs text-slate-500">
+          <div className="px-2 py-6 text-center text-xs text-ink-muted">
             Domains you query will appear here.
           </div>
         ) : (
@@ -98,18 +98,18 @@ export function HistorySidebar({
                   className={`w-full rounded-lg border px-2.5 py-2 text-left transition ${
                     isActive
                       ? "border-sky-500/40 bg-sky-500/10"
-                      : "border-transparent hover:border-slate-800 hover:bg-slate-800/40"
+                      : "border-transparent hover:border-line hover:bg-surface-alt"
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="truncate font-mono text-xs font-medium text-slate-100">
+                    <span className="truncate font-mono text-xs font-medium text-ink">
                       {item.domain}
                     </span>
-                    <span className="shrink-0 text-[10px] text-slate-500">
+                    <span className="shrink-0 text-[10px] text-ink-muted">
                       {timeLabel}
                     </span>
                   </div>
-                  <div className="mt-1.5 flex items-center justify-between text-[10px] text-slate-400">
+                  <div className="mt-1.5 flex items-center justify-between text-[10px] text-ink-muted">
                     <span>{item.totalRecords} records</span>
                     <div
                       className="flex items-center gap-1"

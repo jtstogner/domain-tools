@@ -3,42 +3,73 @@ import {
   Copy,
   Database,
   FileCode2,
+  FileDiff,
   FileSearch,
+  GitBranch,
   Globe2,
   HeartPulse,
   Layers,
+  ListChecks,
+  Lock,
+  Monitor,
+  Moon,
   Network,
+  Plug,
+  Radio,
+  Server,
   Shield,
+  Sun,
   AlertCircle,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BulkCheckerPanel } from "./components/BulkCheckerPanel";
+import { DnsDiffPanel } from "./components/DnsDiffPanel";
 import { DomainHealthPanel } from "./components/DomainHealthPanel";
 import { ExportMenu } from "./components/ExportMenu";
 import { HistorySidebar } from "./components/HistorySidebar";
+import { LiveMonitorPanel } from "./components/LiveMonitorPanel";
+import { NetworkPanel } from "./components/NetworkPanel";
+import { PortsPanel } from "./components/PortsPanel";
 import { PropagationView } from "./components/PropagationView";
 import { ALL_RECORD_TYPES, QueryBar } from "./components/QueryBar";
+import {
+  INITIAL_PROGRESS_STAGES,
+  type ProgressStageState,
+  QueryProgressBanner,
+} from "./components/QueryProgressBanner";
 import { RecordsTable } from "./components/RecordsTable";
+import { RedirectsPanel } from "./components/RedirectsPanel";
 import { SecurityPanel } from "./components/SecurityPanel";
 import { SubdomainsPanel } from "./components/SubdomainsPanel";
+import { TlsPanel } from "./components/TlsPanel";
 import { WebsitePanel } from "./components/WebsitePanel";
 import { WhoisPanel } from "./components/WhoisPanel";
 import { copyToClipboard, queryDomain } from "./lib/api";
 import { formatAsZoneFile } from "./lib/export";
+import { type ThemePreference, useTheme } from "./lib/theme";
 import type {
   DnsQueryReport,
   HistoryEntry,
+  QueryProgressEvent,
   RecordTypeName,
   ResolverId,
 } from "./types/dns";
+
+type WorkspaceMode = "inspector" | "bulk" | "monitor";
 
 type ActiveTab =
   | "records"
   | "propagation"
   | "security"
+  | "tls"
+  | "network"
+  | "redirects"
   | "health"
   | "subdomains"
+  | "ports"
   | "whois"
   | "website"
+  | "diff"
   | "zone";
 
 const HISTORY_KEY = "domain_tools_history_v1";
@@ -57,7 +88,15 @@ function loadHistory(): HistoryEntry[] {
   }
 }
 
+const THEME_OPTIONS: { id: ThemePreference; label: string; Icon: typeof Monitor }[] = [
+  { id: "system", label: "System", Icon: Monitor },
+  { id: "light", label: "Light", Icon: Sun },
+  { id: "dark", label: "Dark", Icon: Moon },
+];
+
 export function App() {
+  const { preference, setPreference } = useTheme();
+  const [workspace, setWorkspace] = useState<WorkspaceMode>("inspector");
   const [domain, setDomain] = useState("");
   const [recordTypes, setRecordTypes] =
     useState<RecordTypeName[]>(ALL_RECORD_TYPES);
@@ -70,6 +109,11 @@ export function App() {
   const [customResolver, setCustomResolver] = useState("");
   const [dkimSelectorsInput, setDkimSelectorsInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [queryDomainLabel, setQueryDomainLabel] = useState("");
+  const [queryStartedAt, setQueryStartedAt] = useState<number | null>(null);
+  const [progressStages, setProgressStages] = useState<ProgressStageState[]>(
+    INITIAL_PROGRESS_STAGES,
+  );
   const [error, setError] = useState<string | null>(null);
   const [report, setReport] = useState<DnsQueryReport | null>(null);
   const [selectedResolverId, setSelectedResolverId] = useState("cloudflare");
@@ -99,12 +143,54 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) {
+      return;
+    }
+    let active = true;
+    let unlisten: (() => void) | undefined;
+
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<QueryProgressEvent>("query-progress", ({ payload }) => {
+          setProgressStages((prev) =>
+            prev.map((item) =>
+              item.id === payload.stage
+                ? {
+                    ...item,
+                    label: payload.label || item.label,
+                    status: payload.status,
+                    elapsedMs: payload.elapsed_ms,
+                  }
+                : item,
+            ),
+          );
+        }),
+      )
+      .then((fn) => {
+        if (!active) {
+          fn();
+        } else {
+          unlisten = fn;
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      active = false;
+      unlisten?.();
+    };
+  }, []);
+
   const runLookup = useCallback(
     async (overrideDomain?: string) => {
       const targetDomain = (overrideDomain ?? domain).trim();
       if (!targetDomain) return;
 
       setLoading(true);
+      setQueryDomainLabel(targetDomain);
+      setQueryStartedAt(Date.now());
+      setProgressStages(INITIAL_PROGRESS_STAGES.map((s) => ({ ...s })));
       setError(null);
 
       const dkimSelectors = dkimSelectorsInput
@@ -154,6 +240,7 @@ export function App() {
         setError(String(err));
       } finally {
         setLoading(false);
+        setQueryStartedAt(null);
       }
     },
     [customResolver, dkimSelectorsInput, domain, recordTypes, resolvers],
@@ -165,12 +252,13 @@ export function App() {
   );
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#0b0f17] text-slate-100">
+    <div className="flex h-screen w-screen overflow-hidden bg-canvas text-ink">
       <HistorySidebar
         history={history}
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
         onSelectDomain={(d) => {
+          setWorkspace("inspector");
           setDomain(d);
           void runLookup(d);
         }}
@@ -182,32 +270,113 @@ export function App() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex items-center justify-between border-b border-slate-800 bg-[#0e1420] px-6 py-3">
+        <header className="flex items-center justify-between gap-3 border-b border-line bg-chrome px-6 py-3">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-500/15 ring-1 ring-sky-500/30">
-              <Globe2 className="h-4 w-4 text-sky-400" />
+              <Globe2 className="h-4 w-4 text-sky-600 dark:text-sky-400" />
             </div>
             <div>
-              <h1 className="text-sm font-semibold tracking-tight text-slate-100">
+              <h1 className="text-sm font-semibold tracking-tight text-ink">
                 Domain Tools
               </h1>
-              <p className="text-[11px] text-slate-400">
-                DNS records, propagation, security, health, subdomains, WHOIS &amp; web stack
+              <p className="text-[11px] text-ink-muted">
+                DNS, SSL/TLS, ASN/IP, redirects, bulk checks &amp; live monitoring
               </p>
             </div>
           </div>
 
-          {report && (
-            <ExportMenu
-              report={report}
-              selectedResolverId={selectedResolverId}
-              onNotify={notify}
-            />
-          )}
+          <div
+            className="inline-flex items-center rounded-lg border border-line bg-surface-alt p-0.5"
+            role="tablist"
+            aria-label="Workspace mode"
+          >
+            {(
+              [
+                ["inspector", "Domain Inspector", Globe2],
+                ["bulk", "Bulk Checker", ListChecks],
+                ["monitor", "Live Monitor", Radio],
+              ] as const
+            ).map(([id, label, Icon]) => {
+              const active = workspace === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setWorkspace(id)}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                    active
+                      ? "bg-surface text-ink shadow-sm ring-1 ring-line"
+                      : "text-ink-muted hover:text-ink"
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+                  <span className="hidden md:inline">{label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-2.5">
+            <div
+              className="inline-flex items-center rounded-lg border border-line bg-surface-alt p-0.5"
+              role="group"
+              aria-label="Theme"
+            >
+              {THEME_OPTIONS.map(({ id, label, Icon }) => {
+                const active = preference === id;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setPreference(id)}
+                    title={`Theme: ${label}`}
+                    className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition ${
+                      active
+                        ? "bg-surface text-ink shadow-sm ring-1 ring-line"
+                        : "text-ink-muted hover:text-ink"
+                    }`}
+                  >
+                    <Icon className="h-3 w-3" />
+                    <span className="hidden sm:inline">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {report && workspace === "inspector" && (
+              <ExportMenu
+                report={report}
+                selectedResolverId={selectedResolverId}
+                onNotify={notify}
+              />
+            )}
+          </div>
         </header>
 
         <main className="flex-1 overflow-y-auto p-6">
           <div className="mx-auto max-w-7xl space-y-5">
+            {workspace === "bulk" && (
+              <BulkCheckerPanel
+                onInspectDomain={(d) => {
+                  setWorkspace("inspector");
+                  setDomain(d);
+                  setActiveTab("records");
+                  void runLookup(d);
+                }}
+                onNotify={notify}
+              />
+            )}
+
+            {workspace === "monitor" && (
+              <LiveMonitorPanel
+                initialTarget={report?.domain || domain || "cloudflare.com"}
+              />
+            )}
+
+            {workspace === "inspector" && (
+              <>
             <QueryBar
               domain={domain}
               onDomainChange={setDomain}
@@ -225,22 +394,32 @@ export function App() {
             />
 
             {error && (
-              <div className="flex items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-200">
-                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
+              <div className="flex items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-900 dark:text-rose-200">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />
                 <div>
                   <div className="font-semibold">DNS Lookup Failed</div>
-                  <div className="mt-0.5 text-xs text-rose-300/90">{error}</div>
+                  <div className="mt-0.5 text-xs text-rose-800 dark:text-rose-300/90">
+                    {error}
+                  </div>
                 </div>
               </div>
             )}
 
+            {loading && (
+              <QueryProgressBanner
+                domain={queryDomainLabel}
+                stages={progressStages}
+                startedAt={queryStartedAt}
+              />
+            )}
+
             {!report && !loading && !error && (
-              <div className="rounded-xl border border-dashed border-slate-800 bg-[#111827]/50 px-6 py-16 text-center">
-                <Globe2 className="mx-auto h-10 w-10 text-slate-600" />
-                <h2 className="mt-3 text-base font-semibold text-slate-200">
+              <div className="rounded-xl border border-dashed border-line bg-surface/60 px-6 py-16 text-center">
+                <Globe2 className="mx-auto h-10 w-10 text-ink-muted/60" />
+                <h2 className="mt-3 text-base font-semibold text-ink">
                   Query any domain&apos;s DNS records
                 </h2>
-                <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-slate-400">
+                <p className="mx-auto mt-1 max-w-md text-xs leading-relaxed text-ink-muted">
                   Enter a domain above to query A, AAAA, CNAME, MX, TXT, NS, SOA,
                   CAA, and SRV records across Cloudflare, Google, Quad9, and your
                   local system resolver, plus verify SPF, DMARC, DKIM, and DNSSEC.
@@ -249,16 +428,20 @@ export function App() {
             )}
 
             {report && (
-              <div className="space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-2">
+              <div
+                className={`space-y-4 transition-opacity ${
+                  loading ? "pointer-events-none opacity-50" : ""
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line pb-2">
                   <div className="flex flex-wrap items-center gap-1">
                     <button
                       type="button"
                       onClick={() => setActiveTab("records")}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                         activeTab === "records"
-                          ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
-                          : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
                       }`}
                     >
                       <Database className="h-3.5 w-3.5" />
@@ -269,8 +452,8 @@ export function App() {
                       onClick={() => setActiveTab("propagation")}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                         activeTab === "propagation"
-                          ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
-                          : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
                       }`}
                     >
                       <Activity className="h-3.5 w-3.5" />
@@ -281,8 +464,8 @@ export function App() {
                       onClick={() => setActiveTab("security")}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                         activeTab === "security"
-                          ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
-                          : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
                       }`}
                     >
                       <Shield className="h-3.5 w-3.5" />
@@ -290,41 +473,114 @@ export function App() {
                     </button>
                     <button
                       type="button"
+                      onClick={() => setActiveTab("tls")}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                        activeTab === "tls"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
+                      }`}
+                    >
+                      <Lock className="h-3.5 w-3.5" />
+                      SSL / TLS
+                      {report.tls?.days_remaining != null && (
+                        <span
+                          className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] font-semibold ${
+                            report.tls.status === "ok"
+                              ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                              : report.tls.status === "warning"
+                                ? "bg-amber-500/20 text-amber-700 dark:text-amber-300"
+                                : "bg-rose-500/20 text-rose-700 dark:text-rose-300"
+                          }`}
+                        >
+                          {report.tls.days_remaining}d
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("network")}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                        activeTab === "network"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
+                      }`}
+                    >
+                      <Server className="h-3.5 w-3.5" />
+                      Network / IP
+                      {(report.network?.ips?.length ?? 0) > 0 && (
+                        <span className="rounded-full bg-surface-alt px-1.5 py-0.2 font-mono text-[10px] text-ink-secondary">
+                          {report.network.ips.length}
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("redirects")}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                        activeTab === "redirects"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
+                      }`}
+                    >
+                      <GitBranch className="h-3.5 w-3.5" />
+                      Redirects
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setActiveTab("health")}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                         activeTab === "health"
-                          ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
-                          : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
                       }`}
                     >
                       <HeartPulse className="h-3.5 w-3.5" />
                       Domain Health
-                      <span
-                        className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] font-semibold ${
-                          report.health.overall_status === "healthy"
-                            ? "bg-emerald-500/20 text-emerald-300"
-                            : report.health.overall_status === "caution"
-                              ? "bg-amber-500/20 text-amber-300"
-                              : "bg-rose-500/20 text-rose-300"
-                        }`}
-                      >
-                        {report.health.grade}
-                      </span>
+                      {report.health && (
+                        <span
+                          className={`rounded-full px-1.5 py-0.2 font-mono text-[10px] font-semibold ${
+                            report.health.overall_status === "healthy"
+                              ? "bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
+                              : report.health.overall_status === "caution"
+                                ? "bg-amber-500/20 text-amber-700 dark:text-amber-300"
+                                : "bg-rose-500/20 text-rose-700 dark:text-rose-300"
+                          }`}
+                        >
+                          {report.health.grade}
+                        </span>
+                      )}
                     </button>
                     <button
                       type="button"
                       onClick={() => setActiveTab("subdomains")}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                         activeTab === "subdomains"
-                          ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
-                          : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
                       }`}
                     >
                       <Network className="h-3.5 w-3.5" />
                       Subdomains
-                      {report.subdomains.total_found > 0 && (
-                        <span className="rounded-full bg-slate-800 px-1.5 py-0.2 font-mono text-[10px] text-slate-300">
+                      {(report.subdomains?.total_found ?? 0) > 0 && (
+                        <span className="rounded-full bg-surface-alt px-1.5 py-0.2 font-mono text-[10px] text-ink-secondary">
                           {report.subdomains.total_found}
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("ports")}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                        activeTab === "ports"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
+                      }`}
+                    >
+                      <Plug className="h-3.5 w-3.5" />
+                      Ports
+                      {report.ports && (
+                        <span className="rounded-full bg-surface-alt px-1.5 py-0.2 font-mono text-[10px] text-ink-secondary">
+                          {report.ports.open_count}
                         </span>
                       )}
                     </button>
@@ -333,8 +589,8 @@ export function App() {
                       onClick={() => setActiveTab("whois")}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                         activeTab === "whois"
-                          ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
-                          : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
                       }`}
                     >
                       <FileSearch className="h-3.5 w-3.5" />
@@ -345,25 +601,37 @@ export function App() {
                       onClick={() => setActiveTab("website")}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                         activeTab === "website"
-                          ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
-                          : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
                       }`}
                     >
                       <Layers className="h-3.5 w-3.5" />
                       Website
-                      {report.website.technologies.length > 0 && (
-                        <span className="rounded-full bg-slate-800 px-1.5 py-0.2 font-mono text-[10px] text-slate-300">
+                      {(report.website?.technologies?.length ?? 0) > 0 && (
+                        <span className="rounded-full bg-surface-alt px-1.5 py-0.2 font-mono text-[10px] text-ink-secondary">
                           {report.website.technologies.length}
                         </span>
                       )}
                     </button>
                     <button
                       type="button"
+                      onClick={() => setActiveTab("diff")}
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
+                        activeTab === "diff"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
+                      }`}
+                    >
+                      <FileDiff className="h-3.5 w-3.5" />
+                      DNS Diff
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => setActiveTab("zone")}
                       className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition ${
                         activeTab === "zone"
-                          ? "bg-sky-500/15 text-sky-300 ring-1 ring-sky-500/30"
-                          : "text-slate-400 hover:bg-slate-800/60 hover:text-slate-200"
+                          ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
+                          : "text-ink-muted hover:bg-surface-alt hover:text-ink"
                       }`}
                     >
                       <FileCode2 className="h-3.5 w-3.5" />
@@ -371,9 +639,9 @@ export function App() {
                     </button>
                   </div>
 
-                  <div className="font-mono text-xs text-slate-400">
+                  <div className="font-mono text-xs text-ink-muted">
                     Target:{" "}
-                    <span className="font-semibold text-slate-200">
+                    <span className="font-semibold text-ink">
                       {report.domain}
                     </span>
                   </div>
@@ -403,38 +671,166 @@ export function App() {
                   />
                 )}
 
-                {activeTab === "health" && (
-                  <DomainHealthPanel health={report.health} />
-                )}
+                {activeTab === "tls" &&
+                  (report.tls ? (
+                    <TlsPanel
+                      tls={report.tls}
+                      defaultHost={report.domain}
+                      onNotify={notify}
+                    />
+                  ) : (
+                    <div className="rounded-xl border border-line bg-surface p-6 text-center text-xs text-ink-muted">
+                      <p>SSL / TLS data is not in this cached result.</p>
+                      <button
+                        type="button"
+                        onClick={() => void runLookup(report.domain)}
+                        className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
+                      >
+                        Re-run Lookup
+                      </button>
+                    </div>
+                  ))}
 
-                {activeTab === "subdomains" && (
-                  <SubdomainsPanel
-                    report={report.subdomains}
-                    onInspectSubdomain={(sub) => {
-                      setDomain(sub);
-                      setActiveTab("records");
-                      void runLookup(sub);
-                    }}
+                {activeTab === "network" &&
+                  (report.network ? (
+                    <NetworkPanel network={report.network} onNotify={notify} />
+                  ) : (
+                    <div className="rounded-xl border border-line bg-surface p-6 text-center text-xs text-ink-muted">
+                      <p>Network / ASN data is not in this cached result.</p>
+                      <button
+                        type="button"
+                        onClick={() => void runLookup(report.domain)}
+                        className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
+                      >
+                        Re-run Lookup
+                      </button>
+                    </div>
+                  ))}
+
+                {activeTab === "redirects" &&
+                  (report.redirects ? (
+                    <RedirectsPanel
+                      redirects={report.redirects}
+                      defaultDomain={report.domain}
+                    />
+                  ) : (
+                    <div className="rounded-xl border border-line bg-surface p-6 text-center text-xs text-ink-muted">
+                      <p>Redirect &amp; Waterfall data is not in this cached result.</p>
+                      <button
+                        type="button"
+                        onClick={() => void runLookup(report.domain)}
+                        className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
+                      >
+                        Re-run Lookup
+                      </button>
+                    </div>
+                  ))}
+
+                {activeTab === "health" &&
+                  (report.health ? (
+                    <DomainHealthPanel health={report.health} />
+                  ) : (
+                    <div className="rounded-xl border border-line bg-surface p-6 text-center text-xs text-ink-muted">
+                      <p>Domain Health data is not in this cached result.</p>
+                      <button
+                        type="button"
+                        onClick={() => void runLookup(report.domain)}
+                        className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
+                      >
+                        Re-run Lookup
+                      </button>
+                    </div>
+                  ))}
+
+                {activeTab === "subdomains" &&
+                  (report.subdomains ? (
+                    <SubdomainsPanel
+                      report={report.subdomains}
+                      onInspectSubdomain={(sub) => {
+                        setDomain(sub);
+                        setActiveTab("records");
+                        void runLookup(sub);
+                      }}
+                      onNotify={notify}
+                    />
+                  ) : (
+                    <div className="rounded-xl border border-line bg-surface p-6 text-center text-xs text-ink-muted">
+                      <p>Subdomain data is not in this cached result.</p>
+                      <button
+                        type="button"
+                        onClick={() => void runLookup(report.domain)}
+                        className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
+                      >
+                        Re-run Lookup
+                      </button>
+                    </div>
+                  ))}
+
+                {activeTab === "ports" &&
+                  (report.ports ? (
+                    <PortsPanel report={report.ports} onNotify={notify} />
+                  ) : (
+                    <div className="rounded-xl border border-line bg-surface p-6 text-center text-xs text-ink-muted">
+                      <p>Port scan data is not in this cached result.</p>
+                      <button
+                        type="button"
+                        onClick={() => void runLookup(report.domain)}
+                        className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
+                      >
+                        Re-run Lookup
+                      </button>
+                    </div>
+                  ))}
+
+                {activeTab === "whois" &&
+                  (report.whois ? (
+                    <WhoisPanel
+                      whois={report.whois}
+                      queriedTarget={report.domain}
+                      onNotify={notify}
+                    />
+                  ) : (
+                    <div className="rounded-xl border border-line bg-surface p-6 text-center text-xs text-ink-muted">
+                      <p>WHOIS data is not in this cached result.</p>
+                      <button
+                        type="button"
+                        onClick={() => void runLookup(report.domain)}
+                        className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
+                      >
+                        Re-run Lookup
+                      </button>
+                    </div>
+                  ))}
+
+                {activeTab === "website" &&
+                  (report.website ? (
+                    <WebsitePanel website={report.website} onNotify={notify} />
+                  ) : (
+                    <div className="rounded-xl border border-line bg-surface p-6 text-center text-xs text-ink-muted">
+                      <p>Website stack data is not in this cached result.</p>
+                      <button
+                        type="button"
+                        onClick={() => void runLookup(report.domain)}
+                        className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
+                      >
+                        Re-run Lookup
+                      </button>
+                    </div>
+                  ))}
+
+                {activeTab === "diff" && (
+                  <DnsDiffPanel
+                    report={report}
+                    selectedResolverId={selectedResolverId}
+                    onSelectResolverId={setSelectedResolverId}
                     onNotify={notify}
                   />
-                )}
-
-                {activeTab === "whois" && (
-                  <WhoisPanel
-                    whois={report.whois}
-                    queriedTarget={report.domain}
-                    onNotify={notify}
-                  />
-                )}
-
-                {activeTab === "website" && (
-                  <WebsitePanel website={report.website} onNotify={notify} />
                 )}
 
                 {activeTab === "zone" && (
-                  <div className="overflow-hidden rounded-xl border border-slate-800 bg-[#111827]">
-                    <div className="flex items-center justify-between border-b border-slate-800 bg-[#0d131f] px-4 py-2.5">
-                      <span className="text-xs font-medium text-slate-300">
+                  <div className="overflow-hidden rounded-xl border border-line bg-surface">
+                    <div className="flex items-center justify-between border-b border-line bg-surface-alt px-4 py-2.5">
+                      <span className="text-xs font-medium text-ink-secondary">
                         BIND Zone Style Output
                       </span>
                       <button
@@ -443,25 +839,27 @@ export function App() {
                           await copyToClipboard(zoneOutput);
                           notify("Copied zone output");
                         }}
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs text-slate-200 hover:border-sky-500/50 hover:text-sky-300"
+                        className="inline-flex items-center gap-1.5 rounded-md border border-line-strong bg-surface px-2.5 py-1 text-xs text-ink-secondary hover:border-sky-500/50 hover:text-sky-600 dark:hover:text-sky-300"
                       >
                         <Copy className="h-3.5 w-3.5" />
                         Copy Zone
                       </button>
                     </div>
-                    <pre className="overflow-x-auto p-4 font-mono text-xs leading-relaxed text-slate-200">
+                    <pre className="overflow-x-auto p-4 font-mono text-xs leading-relaxed text-ink">
                       {zoneOutput}
                     </pre>
                   </div>
                 )}
               </div>
             )}
+              </>
+            )}
           </div>
         </main>
       </div>
 
       {toast && (
-        <div className="fixed bottom-4 right-4 z-50 rounded-lg border border-sky-500/40 bg-[#111827] px-3.5 py-2 text-xs font-medium text-sky-200 shadow-xl shadow-black/50">
+        <div className="fixed bottom-4 right-4 z-50 rounded-lg border border-sky-500/40 bg-surface px-3.5 py-2 text-xs font-medium text-sky-700 shadow-xl shadow-slate-900/10 dark:text-sky-200 dark:shadow-black/50">
           {toast}
         </div>
       )}
