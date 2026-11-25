@@ -1,8 +1,23 @@
-import { Download, Copy, FileJson, FileSpreadsheet, FileCode2, ChevronDown } from "lucide-react";
+import {
+  Download,
+  Copy,
+  FileJson,
+  FileSpreadsheet,
+  FileCode2,
+  FileText,
+  Globe,
+  ChevronDown,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { DnsQueryReport } from "../types/dns";
 import { copyToClipboard, saveExport } from "../lib/api";
-import { formatAsCsv, formatAsJson, formatAsZoneFile } from "../lib/export";
+import {
+  formatAsAuditHtml,
+  formatAsAuditMarkdown,
+  formatAsCsv,
+  formatAsJson,
+  formatAsZoneFile,
+} from "../lib/export";
 
 interface ExportMenuProps {
   report: DnsQueryReport;
@@ -28,33 +43,52 @@ export function ExportMenu({
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
-  const handleSave = async (ext: "json" | "csv" | "zone") => {
+  const handleSave = async (ext: "json" | "csv" | "zone" | "md" | "html") => {
     setOpen(false);
     const content =
       ext === "json"
         ? formatAsJson(report)
         : ext === "csv"
           ? formatAsCsv(report)
-          : formatAsZoneFile(report, selectedResolverId);
+          : ext === "md"
+            ? formatAsAuditMarkdown(report)
+            : ext === "html"
+              ? formatAsAuditHtml(report)
+              : formatAsZoneFile(report, selectedResolverId);
+
+    const filename =
+      ext === "md"
+        ? `${report.domain}-audit.md`
+        : ext === "html"
+          ? `${report.domain}-audit.html`
+          : `${report.domain}.${ext}`;
 
     try {
-      const saved = await saveExport(`${report.domain}.${ext}`, ext, content);
+      const saved = await saveExport(filename, ext, content);
       if (saved) {
-        onNotify(`Saved ${report.domain}.${ext}`);
+        onNotify(`Saved ${filename}`);
       }
     } catch (err) {
       onNotify(`Export failed: ${String(err)}`);
     }
   };
 
-  const handleCopy = async (kind: "zone" | "json") => {
+  const handleCopy = async (kind: "zone" | "json" | "md") => {
     setOpen(false);
     const content =
       kind === "zone"
         ? formatAsZoneFile(report, selectedResolverId)
-        : formatAsJson(report);
+        : kind === "md"
+          ? formatAsAuditMarkdown(report)
+          : formatAsJson(report);
     await copyToClipboard(content);
-    onNotify(kind === "zone" ? "Copied zone output" : "Copied JSON report");
+    onNotify(
+      kind === "zone"
+        ? "Copied zone output"
+        : kind === "md"
+          ? "Copied Markdown audit report"
+          : "Copied JSON report",
+    );
   };
 
   return (
@@ -70,7 +104,24 @@ export function ExportMenu({
       </button>
 
       {open && (
-        <div className="absolute right-0 z-30 mt-1.5 w-52 overflow-hidden rounded-xl border border-line-strong bg-surface py-1 shadow-xl shadow-slate-900/10 dark:shadow-black/50">
+        <div className="absolute right-0 z-30 mt-1.5 w-60 overflow-hidden rounded-xl border border-line-strong bg-surface py-1 shadow-xl shadow-slate-900/10 dark:shadow-black/50">
+          <button
+            type="button"
+            onClick={() => handleSave("md")}
+            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
+          >
+            <FileText className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
+            Save Audit Report (.md)
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSave("html")}
+            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
+          >
+            <Globe className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            Save Audit Report (.html)
+          </button>
+          <div className="my-1 border-t border-line" />
           <button
             type="button"
             onClick={() => handleSave("json")}
@@ -96,6 +147,14 @@ export function ExportMenu({
             Save Zone File (.zone)
           </button>
           <div className="my-1 border-t border-line" />
+          <button
+            type="button"
+            onClick={() => handleCopy("md")}
+            className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
+          >
+            <Copy className="h-3.5 w-3.5 text-ink-muted" />
+            Copy Audit Report (MD)
+          </button>
           <button
             type="button"
             onClick={() => handleCopy("zone")}
