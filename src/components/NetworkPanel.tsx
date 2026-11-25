@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { copyToClipboard, runTraceroute } from "../lib/api";
-import { calculateCidr, isIpInCidr } from "../lib/cidr";
+import { calculateCidr, cidrToSpfToken, ipToReversePtr, isIpInCidr } from "../lib/cidr";
 import type { NetworkReport, TracerouteReport } from "../types/dns";
 
 interface NetworkPanelProps {
@@ -52,6 +52,11 @@ export function NetworkPanel({
   }, [defaultTarget, network.ips]);
 
   const cidrResult = useMemo(() => calculateCidr(cidrInput), [cidrInput]);
+  const reversePtr = useMemo(
+    () => ipToReversePtr(testIpInput.trim() || cidrInput),
+    [testIpInput, cidrInput],
+  );
+  const spfToken = useMemo(() => cidrToSpfToken(cidrInput), [cidrInput]);
   const ipMatch = useMemo(() => {
     if (!testIpInput.trim()) return null;
     return isIpInCidr(cidrInput, testIpInput);
@@ -406,6 +411,60 @@ export function NetworkPanel({
                 <div className="rounded-xl border border-line bg-surface p-3.5 text-xs">
                   <span className="text-ink-muted">Binary Netmask: </span>
                   <span className="font-mono text-ink-secondary">{cidrResult.binaryMask}</span>
+                </div>
+              )}
+
+              {(reversePtr || spfToken) && (
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  {reversePtr && (
+                    <div className="rounded-xl border border-line bg-surface p-3.5 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-ink">
+                          Reverse DNS (PTR Name)
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void copyToClipboard(reversePtr.ptrName);
+                            onNotify("Copied Reverse PTR name");
+                          }}
+                          className="inline-flex items-center gap-1 text-[11px] text-ink-muted hover:text-sky-600 dark:hover:text-sky-300"
+                        >
+                          <Copy className="h-3 w-3" />
+                          Copy
+                        </button>
+                      </div>
+                      <div className="mt-1 break-all font-mono text-[11px] text-ink-secondary">
+                        {reversePtr.ptrName}
+                      </div>
+                      <div className="mt-1 text-[10px] text-ink-muted">
+                        Delegation zone: <span className="font-mono">{reversePtr.delegatedZone}</span>
+                      </div>
+                    </div>
+                  )}
+                  {spfToken && (
+                    <div className="rounded-xl border border-line bg-surface p-3.5 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-semibold text-ink">
+                          SPF Mechanism Token
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void copyToClipboard(spfToken);
+                            onNotify(`Copied ${spfToken}`);
+                          }}
+                          className="inline-flex items-center gap-1 text-[11px] text-ink-muted hover:text-sky-600 dark:hover:text-sky-300"
+                        >
+                          <Copy className="h-3 w-3" />
+                          Copy
+                        </button>
+                      </div>
+                      <div className="mt-1 break-all font-mono text-[11px] text-sky-700 dark:text-sky-300">
+                        {spfToken}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

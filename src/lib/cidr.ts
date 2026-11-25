@@ -331,3 +331,61 @@ export function isIpInCidr(cidrInput: string, ipInput: string): boolean | null {
   if (net === null || end === null || val === null) return null;
   return val >= net && val <= end;
 }
+
+export interface ReversePtrInfo {
+  version: 4 | 6;
+  ip: string;
+  ptrName: string;
+  delegatedZone: string;
+  secondaryZone?: string;
+}
+
+export function ipToReversePtr(ipInput: string): ReversePtrInfo | null {
+  const clean = ipInput.trim().split("/")[0]?.trim() ?? "";
+  if (!clean) return null;
+
+  const v4 = parseIpv4ToBigInt(clean);
+  if (v4 !== null) {
+    const a = Number((v4 >> 24n) & 0xffn);
+    const b = Number((v4 >> 16n) & 0xffn);
+    const c = Number((v4 >> 8n) & 0xffn);
+    const d = Number(v4 & 0xffn);
+    return {
+      version: 4,
+      ip: `${a}.${b}.${c}.${d}`,
+      ptrName: `${d}.${c}.${b}.${a}.in-addr.arpa`,
+      delegatedZone: `${c}.${b}.${a}.in-addr.arpa (/24)`,
+      secondaryZone: `${b}.${a}.in-addr.arpa (/16)`,
+    };
+  }
+
+  const v6 = parseIpv6ToBigInt(clean);
+  if (v6 !== null) {
+    const hex32 = v6.toString(16).padStart(32, "0");
+    const nibbles = hex32.split("").reverse().join(".");
+    const nibble64Zone = hex32.slice(0, 16).split("").reverse().join(".");
+    const nibble48Zone = hex32.slice(0, 12).split("").reverse().join(".");
+    return {
+      version: 6,
+      ip: bigIntToIpv6(v6),
+      ptrName: `${nibbles}.ip6.arpa`,
+      delegatedZone: `${nibble64Zone}.ip6.arpa (/64)`,
+      secondaryZone: `${nibble48Zone}.ip6.arpa (/48)`,
+    };
+  }
+
+  return null;
+}
+
+export function cidrToSpfToken(cidrInput: string): string | null {
+  const parsed = calculateCidr(cidrInput);
+  if ("error" in parsed) return null;
+  if (parsed.version === 4) {
+    return parsed.prefix === 32
+      ? `ip4:${parsed.networkAddress}`
+      : `ip4:${parsed.networkAddress}/${parsed.prefix}`;
+  }
+  return parsed.prefix === 128
+    ? `ip6:${parsed.networkAddress}`
+    : `ip6:${parsed.networkAddress}/${parsed.prefix}`;
+}

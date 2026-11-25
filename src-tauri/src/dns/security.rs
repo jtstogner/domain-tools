@@ -12,8 +12,8 @@ use tokio::time::timeout;
 
 use crate::dns::{build_resolver, txt_to_string};
 use crate::models::{
-    BimiCheck, DkimCheck, DkimSelectorResult, DmarcCheck, DnssecCheck, MtaStsCheck, SecurityReport,
-    SpfCheck, SpfLookupNode, TlsRptCheck,
+    BimiCheck, DaneCheck, DaneTlsaRecord, DkimCheck, DkimSelectorResult, DmarcCheck, DnssecCheck,
+    MtaStsCheck, SecurityReport, SpfCheck, SpfLookupNode, TlsRptCheck,
 };
 
 const DEFAULT_DKIM_SELECTORS: &[&str] = &[
@@ -67,6 +67,9 @@ pub fn analyze_spf(txt_records: &[String]) -> SpfCheck {
             dns_lookup_count: 0,
             recursive_lookup_count: 0,
             lookup_tree: vec![],
+            flattened_ips: vec![],
+            flattened_record: None,
+            duplicate_includes: vec![],
             issues: vec!["Add a v=spf1 TXT record to authorize mail senders.".to_string()],
         };
     }
@@ -87,6 +90,9 @@ pub fn analyze_spf(txt_records: &[String]) -> SpfCheck {
             dns_lookup_count: 0,
             recursive_lookup_count: 0,
             lookup_tree: vec![],
+            flattened_ips: vec![],
+            flattened_record: None,
+            duplicate_includes: vec![],
             issues: vec![
                 "RFC 7208 permits only one v=spf1 TXT record; multiple records cause a PermError."
                     .to_string(),
@@ -193,6 +199,9 @@ pub fn analyze_spf(txt_records: &[String]) -> SpfCheck {
         _ => "SPF configuration is unsafe or invalid.".to_string(),
     };
 
+    let (flattened_ips, flattened_record, duplicate_includes) =
+        compute_spf_flattening(&mechanisms, &[], all_qualifier.as_deref());
+
     SpfCheck {
         status: status.to_string(),
         summary,
@@ -202,8 +211,94 @@ pub fn analyze_spf(txt_records: &[String]) -> SpfCheck {
         dns_lookup_count,
         recursive_lookup_count: dns_lookup_count,
         lookup_tree: vec![],
+        flattened_ips,
+        flattened_record,
+        duplicate_includes,
         issues,
     }
+}
+
+fn collect_spf_tokens_from_nodes(
+    nodes: &[SpfLookupNode],
+    seen_ips: &mut HashSet<String>,
+    flattened_ips: &mut Vec<String>,
+    seen_includes: &mut HashSet<String>,
+    duplicate_includes: &mut HashSet<String>,
+) {
+    for node in nodes {
+        if let Some(raw) = &node.raw_record {
+            for tok in raw.split_whitespace().skip(1) {
+                let low = tok.to_ascii_lowercase();
+                let s = low.trim_start_matches(['+', '-', '~', '?']);
+                if s.starts_with("ip4:") || s.starts_with("ip6:") {
+                    let normalized = s.to_string();
+                    if seen_ips.insert(normalized.clone()) {
+                        flattened_ips.push(normalized);
+                    }
+                } else if let Some(inc) = s.strip_prefix("include:") {
+                    let clean = inc.trim().trim_end_matches('.').to_string();
+                    if !clean.is_empty() && !seen_includes.insert(clean.clone()) {
+                        duplicate_includes.insert(clean);
+                    }
+                }
+            }
+        }
+        collect_spf_tokens_from_nodes(
+            &node.children,
+            seen_ips,
+            flattened_ips,
+            seen_includes,
+            duplicate_includes,
+        );
+    }
+}
+
+pub fn compute_spf_flattening(
+    mechanisms: &[String],
+    lookup_tree: &[SpfLookupNode],
+    all_qualifier: Option<&str>,
+) -> (Vec<String>, Option<String>, Vec<String>) {
+    let mut seen_ips = HashSet::new();
+    let mut flattened_ips = Vec::new();
+    let mut seen_includes = HashSet::new();
+    let mut duplicate_includes = HashSet::new();
+
+    for tok in mechanisms {
+        let low = tok.to_ascii_lowercase();
+        let s = low.trim_start_matches(['+', '-', '~', '?']);
+        if s.starts_with("ip4:") || s.starts_with("ip6:") {
+            let normalized = s.to_string();
+            if seen_ips.insert(normalized.clone()) {
+                flattened_ips.push(normalized);
+            }
+        } else if let Some(inc) = s.strip_prefix("include:") {
+            let clean = inc.trim().trim_end_matches('.').to_string();
+            if !clean.is_empty() && !seen_includes.insert(clean.clone()) {
+                duplicate_includes.insert(clean);
+            }
+        }
+    }
+
+    collect_spf_tokens_from_nodes(
+        lookup_tree,
+        &mut seen_ips,
+        &mut flattened_ips,
+        &mut seen_includes,
+        &mut duplicate_includes,
+    );
+
+    let flattened_record = (!flattened_ips.is_empty()).then(|| {
+        format!(
+            "v=spf1 {} {}",
+            flattened_ips.join(" "),
+            all_qualifier.unwrap_or("~all")
+        )
+    });
+
+    let mut dups: Vec<String> = duplicate_includes.into_iter().collect();
+    dups.sort();
+
+    (flattened_ips, flattened_record, dups)
 }
 
 fn is_spf_lookup_mechanism(token: &str) -> bool {
@@ -403,6 +498,21 @@ async fn resolve_spf_tree(resolver: &TokioResolver, domain: &str, spf: &mut SpfC
 
     spf.lookup_tree = tree;
     spf.recursive_lookup_count = recursive_count.max(spf.dns_lookup_count);
+
+    let (flat_ips, flat_rec, dup_includes) = compute_spf_flattening(
+        &spf.mechanisms,
+        &spf.lookup_tree,
+        spf.all_qualifier.as_deref(),
+    );
+    spf.flattened_ips = flat_ips;
+    spf.flattened_record = flat_rec;
+    if !dup_includes.is_empty() {
+        spf.issues.push(format!(
+            "Duplicate SPF include target(s) waste DNS lookups: {}.",
+            dup_includes.join(", ")
+        ));
+    }
+    spf.duplicate_includes = dup_includes;
 
     if spf.recursive_lookup_count > 10 {
         let already_flagged = spf.issues.iter().any(|i| i.contains("limit is 10"));
@@ -1203,6 +1313,169 @@ async fn check_bimi(resolver: &TokioResolver, domain: &str) -> BimiCheck {
     }
 }
 
+pub fn dane_usage_label(usage: u8) -> &'static str {
+    match usage {
+        0 => "PKIX-TA (CA Constraint)",
+        1 => "PKIX-EE (Service Cert Constraint)",
+        2 => "DANE-TA (Trust Anchor Assertion)",
+        3 => "DANE-EE (Domain-Issued Cert)",
+        _ => "Unknown",
+    }
+}
+
+pub fn dane_selector_label(selector: u8) -> &'static str {
+    match selector {
+        0 => "Cert (Full DER Certificate)",
+        1 => "SPKI (SubjectPublicKeyInfo)",
+        _ => "Unknown",
+    }
+}
+
+pub fn dane_matching_label(matching: u8) -> &'static str {
+    match matching {
+        0 => "Exact Match",
+        1 => "SHA-256",
+        2 => "SHA-512",
+        _ => "Unknown",
+    }
+}
+
+async fn check_dane_tlsa(
+    domain: &str,
+    resolver: &TokioResolver,
+    dnssec_validated: bool,
+) -> DaneCheck {
+    let apex_fqdn = format!("{domain}.");
+    let mx_hosts: Vec<String> = match timeout(
+        Duration::from_millis(2500),
+        resolver.lookup(apex_fqdn, RecordType::MX),
+    )
+    .await
+    {
+        Ok(Ok(lookup)) => {
+            let mut items: Vec<(u16, String)> = lookup
+                .record_iter()
+                .filter_map(|r| match r.data() {
+                    RData::MX(mx) => {
+                        let host = mx.exchange().to_string().trim_end_matches('.').to_ascii_lowercase();
+                        (!host.is_empty() && host != ".").then_some((mx.preference(), host))
+                    }
+                    _ => None,
+                })
+                .collect();
+            items.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            let mut unique = Vec::new();
+            for (_, h) in items {
+                if !unique.contains(&h) {
+                    unique.push(h);
+                    if unique.len() >= 3 {
+                        break;
+                    }
+                }
+            }
+            unique
+        }
+        _ => Vec::new(),
+    };
+
+    if mx_hosts.is_empty() {
+        return DaneCheck {
+            status: "missing".to_string(),
+            summary: "No MX hosts found to check for DANE TLSA records.".to_string(),
+            mx_checked: vec![],
+            records: vec![],
+            dnssec_required_met: dnssec_validated,
+            issues: vec![],
+        };
+    }
+
+    let tlsa_futs = mx_hosts.iter().map(|mx| {
+        let r = resolver.clone();
+        let mx_name = mx.clone();
+        async move {
+            let qname = format!("_25._tcp.{mx_name}.");
+            let mut found = Vec::new();
+            if let Ok(Ok(lookup)) =
+                timeout(Duration::from_millis(2500), r.lookup(qname, RecordType::TLSA)).await
+            {
+                for rec in lookup.record_iter() {
+                    if let RData::TLSA(tlsa) = rec.data() {
+                        let usage = u8::from(tlsa.cert_usage());
+                        let selector = u8::from(tlsa.selector());
+                        let matching_type = u8::from(tlsa.matching());
+                        let cert_hex: String = tlsa
+                            .cert_data()
+                            .iter()
+                            .map(|b| format!("{b:02x}"))
+                            .collect();
+                        let raw = format!("{usage} {selector} {matching_type} {cert_hex}");
+                        found.push(DaneTlsaRecord {
+                            mx_host: mx_name.clone(),
+                            port: 25,
+                            usage,
+                            usage_label: dane_usage_label(usage).to_string(),
+                            selector,
+                            selector_label: dane_selector_label(selector).to_string(),
+                            matching_type,
+                            matching_type_label: dane_matching_label(matching_type).to_string(),
+                            certificate_data: cert_hex,
+                            raw,
+                        });
+                    }
+                }
+            }
+            found
+        }
+    });
+
+    let records: Vec<DaneTlsaRecord> = join_all(tlsa_futs).await.into_iter().flatten().collect();
+
+    if records.is_empty() {
+        return DaneCheck {
+            status: "missing".to_string(),
+            summary: format!(
+                "No DANE TLSA (_25._tcp) records published on checked MX host(s)."
+            ),
+            mx_checked: mx_hosts,
+            records: vec![],
+            dnssec_required_met: dnssec_validated,
+            issues: vec![],
+        };
+    }
+
+    let mut issues = Vec::new();
+    let (status, summary) = if dnssec_validated {
+        (
+            "pass".to_string(),
+            format!(
+                "DANE TLSA active ({} record(s) across MX hosts, DNSSEC validated).",
+                records.len()
+            ),
+        )
+    } else {
+        issues.push(
+            "DANE TLSA records are published, but DNSSEC is not validated — receiving MTAs will ignore DANE."
+                .to_string(),
+        );
+        (
+            "warn".to_string(),
+            format!(
+                "DANE TLSA found ({} record(s)), but DNSSEC validation is missing.",
+                records.len()
+            ),
+        )
+    };
+
+    DaneCheck {
+        status,
+        summary,
+        mx_checked: mx_hosts,
+        records,
+        dnssec_required_met: dnssec_validated,
+        issues,
+    }
+}
+
 pub async fn run_security_checks(
     domain: &str,
     resolver: &TokioResolver,
@@ -1221,6 +1494,8 @@ pub async fn run_security_checks(
         check_bimi(resolver, domain),
     );
 
+    let dane = check_dane_tlsa(domain, resolver, dnssec.validated).await;
+
     let mut spf = match apex_txts {
         Ok(txts) => analyze_spf(&txts),
         Err(err) => SpfCheck {
@@ -1232,6 +1507,9 @@ pub async fn run_security_checks(
             dns_lookup_count: 0,
             recursive_lookup_count: 0,
             lookup_tree: vec![],
+            flattened_ips: vec![],
+            flattened_record: None,
+            duplicate_includes: vec![],
             issues: vec![err],
         },
     };
@@ -1265,6 +1543,7 @@ pub async fn run_security_checks(
         mta_sts,
         tls_rpt,
         bimi,
+        dane,
     }
 }
 
@@ -1356,5 +1635,60 @@ mod tests {
             bimi.authority_url.as_deref(),
             Some("https://example.com/vmc.pem")
         );
+    }
+
+    #[test]
+    fn test_compute_spf_flattening_and_dane_labels() {
+        let root_mechs = vec![
+            "include:_spf.google.com".to_string(),
+            "ip4:198.51.100.10".to_string(),
+            "-all".to_string(),
+        ];
+        let tree = vec![SpfLookupNode {
+            mechanism: "include:_spf.google.com".to_string(),
+            target: "_spf.google.com".to_string(),
+            lookups_added: 2,
+            depth: 1,
+            raw_record: Some("v=spf1 include:_netblocks.google.com ip4:198.51.100.10 ~all".to_string()),
+            error: None,
+            children: vec![SpfLookupNode {
+                mechanism: "include:_netblocks.google.com".to_string(),
+                target: "_netblocks.google.com".to_string(),
+                lookups_added: 1,
+                depth: 2,
+                raw_record: Some("v=spf1 ip4:35.190.247.0/24 ip6:2001:4860:4000::/36 ~all".to_string()),
+                error: None,
+                children: vec![],
+            }],
+        }];
+
+        let (ips, flat_rec, dups) = compute_spf_flattening(&root_mechs, &tree, Some("-all"));
+        assert_eq!(
+            ips,
+            vec![
+                "ip4:198.51.100.10",
+                "ip4:35.190.247.0/24",
+                "ip6:2001:4860:4000::/36"
+            ]
+        );
+        assert_eq!(
+            flat_rec.as_deref(),
+            Some("v=spf1 ip4:198.51.100.10 ip4:35.190.247.0/24 ip6:2001:4860:4000::/36 -all")
+        );
+        assert!(dups.is_empty());
+
+        let (_, _, dups2) = compute_spf_flattening(
+            &[
+                "include:spf.protection.outlook.com".to_string(),
+                "include:spf.protection.outlook.com".to_string(),
+            ],
+            &[],
+            Some("-all"),
+        );
+        assert_eq!(dups2, vec!["spf.protection.outlook.com"]);
+
+        assert_eq!(dane_usage_label(3), "DANE-EE (Domain-Issued Cert)");
+        assert_eq!(dane_selector_label(1), "SPKI (SubjectPublicKeyInfo)");
+        assert_eq!(dane_matching_label(1), "SHA-256");
     }
 }

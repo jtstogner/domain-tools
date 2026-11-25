@@ -152,6 +152,14 @@ export function WebsitePanel({ website, onNotify }: WebsitePanelProps) {
                 HTTP {website.http_status}
               </span>
             )}
+            {website.http3_supported && (
+              <span
+                title={website.alt_svc ?? "Alt-Svc advertises HTTP/3 (QUIC)"}
+                className="rounded-full border border-cyan-500/40 bg-cyan-500/15 px-2.5 py-0.5 font-mono text-xs font-semibold text-cyan-700 dark:text-cyan-300"
+              >
+                HTTP/3 (QUIC)
+              </span>
+            )}
             <span className="rounded-full border border-line-strong bg-canvas px-2.5 py-0.5 font-mono text-xs text-ink-secondary">
               {website.latency_ms}ms
             </span>
@@ -347,9 +355,11 @@ export function WebsitePanel({ website, onNotify }: WebsitePanelProps) {
                 const badgeTone =
                   f.status === "exposed"
                     ? "border-rose-500/40 bg-rose-500/15 text-rose-700 dark:text-rose-300"
-                    : f.status === "found"
-                      ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                      : "border-line bg-surface-alt text-ink-muted";
+                    : f.status === "warn"
+                      ? "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                      : f.status === "found"
+                        ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                        : "border-line bg-surface-alt text-ink-muted";
                 const isExp = expandedFile === f.path;
                 return (
                   <div
@@ -357,7 +367,9 @@ export function WebsitePanel({ website, onNotify }: WebsitePanelProps) {
                     className={`rounded-lg border p-3 text-xs ${
                       f.status === "exposed"
                         ? "border-rose-500/40 bg-rose-500/[0.06]"
-                        : "border-line bg-canvas"
+                        : f.status === "warn"
+                          ? "border-amber-500/40 bg-amber-500/[0.05]"
+                          : "border-line bg-canvas"
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">

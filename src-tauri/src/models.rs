@@ -74,6 +74,9 @@ pub struct SpfCheck {
     pub dns_lookup_count: u32,
     pub recursive_lookup_count: u32,
     pub lookup_tree: Vec<SpfLookupNode>,
+    pub flattened_ips: Vec<String>,
+    pub flattened_record: Option<String>,
+    pub duplicate_includes: Vec<String>,
     pub issues: Vec<String>,
 }
 
@@ -165,6 +168,31 @@ pub struct BimiCheck {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaneTlsaRecord {
+    pub mx_host: String,
+    pub port: u16,
+    pub usage: u8,
+    pub usage_label: String,
+    pub selector: u8,
+    pub selector_label: String,
+    pub matching_type: u8,
+    pub matching_type_label: String,
+    pub certificate_data: String,
+    pub raw: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaneCheck {
+    /// "pass" | "warn" | "missing"
+    pub status: String,
+    pub summary: String,
+    pub mx_checked: Vec<String>,
+    pub records: Vec<DaneTlsaRecord>,
+    pub dnssec_required_met: bool,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityReport {
     pub spf: SpfCheck,
     pub dmarc: DmarcCheck,
@@ -173,6 +201,7 @@ pub struct SecurityReport {
     pub mta_sts: MtaStsCheck,
     pub tls_rpt: TlsRptCheck,
     pub bimi: BimiCheck,
+    pub dane: DaneCheck,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,6 +326,8 @@ pub struct WebsiteInfo {
     pub final_url: Option<String>,
     pub http_status: Option<u16>,
     pub https: bool,
+    pub http3_supported: bool,
+    pub alt_svc: Option<String>,
     pub latency_ms: u64,
     pub title: Option<String>,
     pub description: Option<String>,

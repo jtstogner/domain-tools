@@ -78,6 +78,9 @@ export interface SpfCheck {
   dns_lookup_count: number;
   recursive_lookup_count: number;
   lookup_tree: SpfLookupNode[];
+  flattened_ips?: string[];
+  flattened_record?: string | null;
+  duplicate_includes?: string[];
   issues: string[];
 }
 
@@ -154,6 +157,28 @@ export interface BimiCheck {
   issues: string[];
 }
 
+export interface DaneTlsaRecord {
+  mx_host: string;
+  port: number;
+  usage: number;
+  usage_label: string;
+  selector: number;
+  selector_label: string;
+  matching_type: number;
+  matching_type_label: string;
+  certificate_data: string;
+  raw: string;
+}
+
+export interface DaneCheck {
+  status: "pass" | "warn" | "missing";
+  summary: string;
+  mx_checked: string[];
+  records: DaneTlsaRecord[];
+  dnssec_required_met: boolean;
+  issues: string[];
+}
+
 export interface SecurityReport {
   spf: SpfCheck;
   dmarc: DmarcCheck;
@@ -162,6 +187,7 @@ export interface SecurityReport {
   mta_sts: MtaStsCheck;
   tls_rpt: TlsRptCheck;
   bimi: BimiCheck;
+  dane?: DaneCheck;
 }
 
 export interface SmtpMxProbe {
@@ -249,7 +275,7 @@ export interface WebFileCheck {
   path: string;
   label: string;
   category: "hygiene" | "security" | "exposure";
-  status: "found" | "missing" | "exposed" | "error";
+  status: "found" | "missing" | "warn" | "exposed" | "error";
   http_status: number | null;
   summary: string;
   preview: string | null;
@@ -271,6 +297,8 @@ export interface WebsiteInfo {
   final_url: string | null;
   http_status: number | null;
   https: boolean;
+  http3_supported?: boolean;
+  alt_svc?: string | null;
   latency_ms: number;
   title: string | null;
   description: string | null;

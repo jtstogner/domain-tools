@@ -2071,9 +2071,9 @@ pub fn compute_health_report(
 mod tests {
     use super::*;
     use crate::models::{
-        BimiCheck, CookieAuditItem, DkimCheck, DmarcCheck, DnssecCheck, IpNetworkInfo, MtaStsCheck,
-        PortScanItem, SecurityHeaderStatus, SpfCheck, SubdomainItem, TakeoverFinding, TlsCertInfo,
-        TlsRptCheck, WebFileCheck, WebSecurityAudit,
+        BimiCheck, CookieAuditItem, DaneCheck, DkimCheck, DmarcCheck, DnssecCheck, IpNetworkInfo,
+        MtaStsCheck, PortScanItem, SecurityHeaderStatus, SpfCheck, SubdomainItem, TakeoverFinding,
+        TlsCertInfo, TlsRptCheck, WebFileCheck, WebSecurityAudit,
     };
 
     #[test]
@@ -2121,6 +2121,9 @@ mod tests {
                 dns_lookup_count: 1,
                 recursive_lookup_count: 1,
                 lookup_tree: vec![],
+                flattened_ips: vec![],
+                flattened_record: None,
+                duplicate_includes: vec![],
                 issues: vec![],
             },
             dmarc: DmarcCheck {
@@ -2179,6 +2182,14 @@ mod tests {
                 authority_url: None,
                 issues: vec![],
             },
+            dane: DaneCheck {
+                status: "missing".to_string(),
+                summary: "missing".to_string(),
+                mx_checked: vec![],
+                records: vec![],
+                dnssec_required_met: true,
+                issues: vec![],
+            },
         }
     }
 
@@ -2214,6 +2225,8 @@ mod tests {
             final_url: Some("https://example.com/".to_string()),
             http_status: Some(200),
             https: true,
+            http3_supported: false,
+            alt_svc: None,
             latency_ms: 50,
             title: None,
             description: None,

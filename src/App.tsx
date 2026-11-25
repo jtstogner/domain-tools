@@ -23,6 +23,7 @@ import {
   Shield,
   ShieldAlert,
   Sun,
+  Wrench,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BulkCheckerPanel } from "./components/BulkCheckerPanel";
@@ -47,6 +48,7 @@ import { SecurityPanel } from "./components/SecurityPanel";
 import { SubdomainsPanel } from "./components/SubdomainsPanel";
 import { TlsPanel } from "./components/TlsPanel";
 import { TyposquatPanel } from "./components/TyposquatPanel";
+import { UtilitiesPanel } from "./components/UtilitiesPanel";
 import { WatchlistPanel } from "./components/WatchlistPanel";
 import { WebsitePanel } from "./components/WebsitePanel";
 import { WhoisPanel } from "./components/WhoisPanel";
@@ -68,7 +70,7 @@ import type {
   ResolverId,
 } from "./types/dns";
 
-type WorkspaceMode = "inspector" | "watchlist" | "bulk" | "monitor";
+type WorkspaceMode = "inspector" | "watchlist" | "bulk" | "monitor" | "utilities";
 
 type ActiveTab =
   | "records"
@@ -366,6 +368,7 @@ export function App() {
                 ["watchlist", "Watchlist", Bookmark],
                 ["bulk", "Bulk Checker", ListChecks],
                 ["monitor", "Live Monitor", Radio],
+                ["utilities", "Utilities", Wrench],
               ] as const
             ).map(([id, label, Icon]) => {
               const active = workspace === id;
@@ -462,6 +465,19 @@ export function App() {
             {workspace === "monitor" && (
               <LiveMonitorPanel
                 initialTarget={report?.domain || domain || "cloudflare.com"}
+              />
+            )}
+
+            {workspace === "utilities" && (
+              <UtilitiesPanel
+                defaultDomain={report?.domain || domain}
+                onInspectDomain={(d) => {
+                  setWorkspace("inspector");
+                  setDomain(d);
+                  setActiveTab("records");
+                  void runLookup(d);
+                }}
+                onNotify={notify}
               />
             )}
 

@@ -110,6 +110,7 @@ export function SecurityPanel({
 }: SecurityPanelProps) {
   const [localCopied, setLocalCopied] = useState<string | null>(null);
   const [showSpfTree, setShowSpfTree] = useState(false);
+  const [showFlattenedSpf, setShowFlattenedSpf] = useState(false);
   const [smtpLoading, setSmtpLoading] = useState(false);
   const [smtpReport, setSmtpReport] = useState<SmtpDeliverabilityReport | null>(null);
   const [smtpError, setSmtpError] = useState<string | null>(null);
@@ -134,7 +135,7 @@ export function SecurityPanel({
     }
   };
 
-  const { spf, dmarc, dkim, dnssec, mta_sts, tls_rpt, bimi } = security;
+  const { spf, dmarc, dkim, dnssec, mta_sts, tls_rpt, bimi, dane } = security;
   const foundDkim = dkim.results.filter((r) => r.found);
   const effectiveLookups = spf.recursive_lookup_count ?? spf.dns_lookup_count;
 
@@ -233,6 +234,49 @@ export function SecurityPanel({
                   {spf.lookup_tree.map((node, idx) => (
                     <SpfTreeNodeView key={`${node.target}-${idx}`} node={node} />
                   ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {spf.flattened_record && (spf.flattened_ips?.length ?? 0) > 0 && (
+            <div className="mt-2.5 rounded-lg border border-line bg-surface-alt p-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowFlattenedSpf((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-ink-secondary hover:text-ink"
+                >
+                  {showFlattenedSpf ? (
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  ) : (
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  )}
+                  <span>
+                    Flattened SPF Preview ({spf.flattened_ips?.length ?? 0} authorized IP/CIDR
+                    {(spf.flattened_ips?.length ?? 0) === 1 ? "" : "s"}, 0 DNS lookups)
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => copyRaw("flattened spf", spf.flattened_record!)}
+                  className="inline-flex items-center gap-1 text-[11px] text-ink-muted hover:text-sky-600 dark:hover:text-sky-300"
+                >
+                  <Copy className="h-3 w-3" />
+                  {localCopied === "flattened spf" ? "Copied" : "Copy Flattened"}
+                </button>
+              </div>
+              {showFlattenedSpf && (
+                <div className="mt-2 space-y-2">
+                  <div className="break-all rounded border border-line bg-canvas p-2 font-mono text-[11px] text-ink">
+                    {spf.flattened_record}
+                  </div>
+                  {(spf.duplicate_includes?.length ?? 0) > 0 && (
+                    <div className="text-[11px] text-amber-700 dark:text-amber-300">
+                      Duplicate includes detected:{" "}
+                      <span className="font-mono">{spf.duplicate_includes?.join(", ")}</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -616,6 +660,67 @@ export function SecurityPanel({
                       </div>
                     )}
                   </div>
+                )}
+              </div>
+            )}
+
+            {dane && (
+              <div className="border-t border-line pt-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-ink">
+                      DANE / TLSA (_25._tcp MX Records)
+                    </h3>
+                    <p className="mt-1 text-xs text-ink-muted">{dane.summary}</p>
+                  </div>
+                  <SecurityBadge status={dane.status} />
+                </div>
+
+                {dane.records.length > 0 && (
+                  <div className="mt-2.5 space-y-2">
+                    {dane.records.map((rec, i) => (
+                      <div
+                        key={`${rec.mx_host}-${i}`}
+                        className="rounded-lg border border-line bg-canvas p-2.5 text-[11px]"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="font-mono font-semibold text-ink">
+                            _25._tcp.{rec.mx_host}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => copyRaw(`tlsa-${i}`, rec.raw)}
+                            className="inline-flex items-center gap-1 text-ink-muted hover:text-sky-600 dark:hover:text-sky-300"
+                          >
+                            <Copy className="h-3 w-3" />
+                            Copy
+                          </button>
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1.5 text-[10px]">
+                          <span className="rounded border border-line bg-surface-alt px-1.5 py-0.5 text-ink-secondary">
+                            Usage {rec.usage}: {rec.usage_label}
+                          </span>
+                          <span className="rounded border border-line bg-surface-alt px-1.5 py-0.5 text-ink-secondary">
+                            Selector {rec.selector}: {rec.selector_label}
+                          </span>
+                          <span className="rounded border border-line bg-surface-alt px-1.5 py-0.5 text-ink-secondary">
+                            Matching {rec.matching_type}: {rec.matching_type_label}
+                          </span>
+                        </div>
+                        <div className="mt-1 break-all font-mono text-[10px] text-ink-muted">
+                          {rec.certificate_data}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {dane.issues.length > 0 && (
+                  <ul className="mt-2 space-y-1 text-xs text-amber-700 dark:text-amber-300">
+                    {dane.issues.map((issue, idx) => (
+                      <li key={idx}>• {issue}</li>
+                    ))}
+                  </ul>
                 )}
               </div>
             )}

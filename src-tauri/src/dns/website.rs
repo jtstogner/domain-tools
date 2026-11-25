@@ -26,6 +26,8 @@ fn empty_website(status: &str, latency_ms: u64, error: Option<String>) -> Websit
         final_url: None,
         http_status: None,
         https: false,
+        http3_supported: false,
+        alt_svc: None,
         latency_ms,
         title: None,
         description: None,
@@ -1178,14 +1180,26 @@ pub fn evaluate_web_file_body(
         }
         "/robots.txt" => {
             if !is_html_page && (lower.contains("user-agent") || lower.contains("disallow") || lower.contains("sitemap")) {
-                WebFileCheck {
-                    path: path.to_string(),
-                    label: label.to_string(),
-                    category: category.to_string(),
-                    status: "found".to_string(),
-                    http_status: Some(code),
-                    summary: "Published valid robots.txt.".to_string(),
-                    preview,
+                if robots_blocks_all_crawlers(trimmed) {
+                    WebFileCheck {
+                        path: path.to_string(),
+                        label: label.to_string(),
+                        category: category.to_string(),
+                        status: "warn".to_string(),
+                        http_status: Some(code),
+                        summary: "WARNING: robots.txt blocks all search crawlers (User-agent: * / Disallow: /).".to_string(),
+                        preview,
+                    }
+                } else {
+                    WebFileCheck {
+                        path: path.to_string(),
+                        label: label.to_string(),
+                        category: category.to_string(),
+                        status: "found".to_string(),
+                        http_status: Some(code),
+                        summary: "Published valid robots.txt.".to_string(),
+                        preview,
+                    }
                 }
             } else {
                 WebFileCheck {
@@ -1329,6 +1343,42 @@ async fn audit_web_files(base_origin: &str) -> Vec<WebFileCheck> {
     join_all(futs).await
 }
 
+pub fn robots_blocks_all_crawlers(body: &str) -> bool {
+    let mut in_wildcard = false;
+    let mut wildcard_disallow_root = false;
+    let mut wildcard_allow_root = false;
+
+    for raw_line in body.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, val)) = line.split_once(':') else {
+            continue;
+        };
+        let k = key.trim().to_ascii_lowercase();
+        let v = val.trim();
+        match k.as_str() {
+            "user-agent" => {
+                in_wildcard = v == "*";
+            }
+            "disallow" if in_wildcard => {
+                if v == "/" {
+                    wildcard_disallow_root = true;
+                }
+            }
+            "allow" if in_wildcard => {
+                if v == "/" {
+                    wildcard_allow_root = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    wildcard_disallow_root && !wildcard_allow_root
+}
+
 pub fn analyze_website_response(
     url: String,
     final_url: String,
@@ -1348,6 +1398,11 @@ pub fn analyze_website_response(
     let server = find_header("server");
     let powered_by = find_header("x-powered-by");
     let content_type = find_header("content-type");
+    let alt_svc = find_header("alt-svc");
+    let http3_supported = alt_svc
+        .as_deref()
+        .map(|v| v.to_ascii_lowercase().contains("h3"))
+        .unwrap_or(false);
 
     let is_html = content_type
         .as_deref()
@@ -1429,6 +1484,8 @@ pub fn analyze_website_response(
         final_url: Some(final_url),
         http_status: Some(http_status),
         https,
+        http3_supported,
+        alt_svc,
         latency_ms,
         title,
         description,
@@ -1770,5 +1827,35 @@ mod tests {
             "DB_HOST=localhost\nAPP_KEY=secret123\n",
         );
         assert_eq!(env_exposed.status, "exposed");
+    }
+
+    #[test]
+    fn test_robots_disallow_all_and_http3_detection() {
+        assert!(robots_blocks_all_crawlers("User-agent: *\nDisallow: /\n"));
+        assert!(!robots_blocks_all_crawlers("User-agent: *\nDisallow: /admin/\n"));
+        assert!(!robots_blocks_all_crawlers(
+            "User-agent: Googlebot\nDisallow: /\nUser-agent: *\nDisallow: /private/\n"
+        ));
+
+        let robots_warn = evaluate_web_file_body(
+            "/robots.txt",
+            "Crawler Policy",
+            "hygiene",
+            Some(200),
+            Some("text/plain"),
+            "User-agent: *\nDisallow: /\n",
+        );
+        assert_eq!(robots_warn.status, "warn");
+
+        let info = analyze_website_response(
+            "https://h3.example.com".into(),
+            "https://h3.example.com/".into(),
+            200,
+            25,
+            vec![("Alt-Svc".to_string(), "h3=\":443\"; ma=86400".to_string())],
+            "<html></html>",
+        );
+        assert!(info.http3_supported);
+        assert_eq!(info.alt_svc.as_deref(), Some("h3=\":443\"; ma=86400"));
     }
 }
