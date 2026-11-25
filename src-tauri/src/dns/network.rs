@@ -285,6 +285,173 @@ async fn lookup_geo_ipwho(client: &reqwest::Client, ip: IpAddr) -> GeoLookupData
     }
 }
 
+pub fn parse_cloudflare_rpki_json(bytes: &[u8]) -> Option<(String, Option<String>)> {
+    let val: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let state = val
+        .get("validated_route")
+        .and_then(|vr| vr.get("validity"))
+        .and_then(|v| v.get("state"))
+        .or_else(|| val.get("state"))
+        .and_then(|s| s.as_str())?
+        .to_ascii_lowercase();
+    let desc = val
+        .get("validated_route")
+        .and_then(|vr| vr.get("validity"))
+        .and_then(|v| v.get("description"))
+        .or_else(|| val.get("description"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string());
+
+    let normalized = match state.as_str() {
+        "valid" => "valid",
+        "invalid" | "invalid_asn" | "invalid_length" => "invalid",
+        "unknown" | "not_found" => "not_found",
+        _ => "unknown",
+    };
+    Some((normalized.to_string(), desc))
+}
+
+pub fn parse_ripestat_rpki_json(bytes: &[u8]) -> Option<(String, Option<String>)> {
+    let val: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let status = val
+        .get("data")
+        .and_then(|d| d.get("status"))
+        .and_then(|s| s.as_str())?
+        .to_ascii_lowercase();
+    let normalized = match status.as_str() {
+        "valid" => "valid",
+        "invalid" | "invalid_asn" | "invalid_length" => "invalid",
+        "unknown" => "not_found",
+        _ => "unknown",
+    };
+    let detail = match normalized {
+        "valid" => Some("BGP origin ASN matches a valid RPKI ROA".to_string()),
+        "invalid" => Some("RPKI ROA mismatch (invalid origin ASN or prefix length)".to_string()),
+        "not_found" => Some("No RPKI ROA published for this ASN/prefix".to_string()),
+        _ => None,
+    };
+    Some((normalized.to_string(), detail))
+}
+
+async fn lookup_rpki(
+    client: &reqwest::Client,
+    asn: Option<u32>,
+    cidr: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let (Some(asn_num), Some(prefix)) = (asn, cidr) else {
+        return (None, None);
+    };
+
+    let cf_url = format!("https://rpki.cloudflare.com/api/v1/validity/{asn_num}/{prefix}");
+    if let Ok(Ok(resp)) = timeout(GEO_HTTP_TIMEOUT, client.get(&cf_url).send()).await {
+        if resp.status().is_success() {
+            if let Ok(bytes) = resp.bytes().await {
+                if let Some((st, desc)) = parse_cloudflare_rpki_json(&bytes) {
+                    return (Some(st), desc);
+                }
+            }
+        }
+    }
+
+    let ripe_url = format!(
+        "https://stat.ripe.net/data/rpki-validation/data.json?resource={asn_num}&prefix={prefix}"
+    );
+    if let Ok(Ok(resp)) = timeout(GEO_HTTP_TIMEOUT, client.get(&ripe_url).send()).await {
+        if resp.status().is_success() {
+            if let Ok(bytes) = resp.bytes().await {
+                if let Some((st, desc)) = parse_ripestat_rpki_json(&bytes) {
+                    return (Some(st), desc);
+                }
+            }
+        }
+    }
+
+    (Some("unknown".to_string()), Some("RPKI validator unavailable".to_string()))
+}
+
+pub fn parse_cloudflare_rpki_json(raw: &[u8]) -> Option<(String, String)> {
+    let val = serde_json::from_slice::<serde_json::Value>(raw).ok()?;
+    let result = val.get("result")?;
+    let state = result.get("state").and_then(|v| v.as_str())?.to_ascii_lowercase();
+    let desc = result
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let mapped_state = match state.as_str() {
+        "valid" => "valid".to_string(),
+        "invalid" | "invalid_asn" | "invalid_length" => "invalid".to_string(),
+        "unknown" => "not_found".to_string(),
+        other => other.to_string(),
+    };
+    let detail = if !desc.is_empty() {
+        desc
+    } else if mapped_state == "not_found" {
+        "No RPKI ROA found for prefix".to_string()
+    } else {
+        format!("RPKI state: {mapped_state}")
+    };
+    Some((mapped_state, detail))
+}
+
+pub fn parse_ripestat_rpki_json(raw: &[u8]) -> Option<(String, String)> {
+    let val = serde_json::from_slice::<serde_json::Value>(raw).ok()?;
+    let data = val.get("data")?;
+    let status = data.get("status").and_then(|v| v.as_str())?.to_ascii_lowercase();
+    let mapped_state = match status.as_str() {
+        "valid" => "valid".to_string(),
+        "invalid" | "invalid_asn" | "invalid_length" => "invalid".to_string(),
+        "unknown" => "not_found".to_string(),
+        other => other.to_string(),
+    };
+    let detail = match mapped_state.as_str() {
+        "valid" => "Authorized by RPKI Route Origin Authorization (ROA)".to_string(),
+        "invalid" => "RPKI Invalid — origin ASN or prefix length does not match ROA".to_string(),
+        "not_found" => "No RPKI ROA published for this prefix".to_string(),
+        _ => format!("RPKI state: {status}"),
+    };
+    Some((mapped_state, detail))
+}
+
+async fn lookup_rpki(
+    client: &reqwest::Client,
+    asn: Option<u32>,
+    cidr: Option<&str>,
+) -> (Option<String>, Option<String>) {
+    let (Some(asn_num), Some(prefix)) = (asn, cidr) else {
+        return (None, None);
+    };
+    if !prefix.contains('/') {
+        return (None, None);
+    }
+
+    let cf_url = format!("https://rpki.cloudflare.com/api/v1/validity/{asn_num}/{prefix}");
+    if let Ok(Ok(resp)) = timeout(GEO_HTTP_TIMEOUT, client.get(&cf_url).send()).await {
+        if resp.status().is_success() {
+            if let Ok(bytes) = resp.bytes().await {
+                if let Some((st, det)) = parse_cloudflare_rpki_json(&bytes) {
+                    return (Some(st), Some(det));
+                }
+            }
+        }
+    }
+
+    let ripe_url = format!(
+        "https://stat.ripe.net/data/rpki-validation/data.json?resource={asn_num}&prefix={prefix}"
+    );
+    if let Ok(Ok(resp)) = timeout(GEO_HTTP_TIMEOUT, client.get(&ripe_url).send()).await {
+        if resp.status().is_success() {
+            if let Ok(bytes) = resp.bytes().await {
+                if let Some((st, det)) = parse_ripestat_rpki_json(&bytes) {
+                    return (Some(st), Some(det));
+                }
+            }
+        }
+    }
+
+    (Some("unknown".to_string()), Some("RPKI lookup unavailable".to_string()))
+}
+
 fn mx_target_from_value(val: &str) -> Option<String> {
     let mut parts = val.split_whitespace();
     let first = parts.next()?;
@@ -418,6 +585,7 @@ pub async fn inspect_network(domain: &str, resolvers: &[ResolverResult]) -> Netw
             let country_code = geo.country_code.or(cymru_cc);
             let (provider_type, provider_name, is_anycast_cdn) =
                 classify_network_provider(as_org.as_deref(), &ptr_records, asn);
+            let (rpki_status, rpki_detail) = lookup_rpki(&http, asn, cidr.as_deref()).await;
 
             IpNetworkInfo {
                 ip: item.ip.to_string(),
@@ -440,6 +608,8 @@ pub async fn inspect_network(domain: &str, resolvers: &[ResolverResult]) -> Netw
                 provider_type,
                 provider_name,
                 is_anycast_cdn,
+                rpki_status,
+                rpki_detail,
             }
         }
     });
@@ -509,5 +679,17 @@ mod tests {
         assert_eq!(kind2, "Cloud / Hosting");
         assert_eq!(name2.as_deref(), Some("Amazon AWS"));
         assert!(!cdn2);
+    }
+
+    #[test]
+    fn test_parse_rpki_responses() {
+        let cf = br#"{"validated_route":{"validity":{"state":"valid","description":"Matches ROA"}}}"#;
+        let (st, desc) = parse_cloudflare_rpki_json(cf).unwrap();
+        assert_eq!(st, "valid");
+        assert_eq!(desc.as_deref(), Some("Matches ROA"));
+
+        let ripe = br#"{"data":{"status":"unknown"}}"#;
+        let (st2, _) = parse_ripestat_rpki_json(ripe).unwrap();
+        assert_eq!(st2, "not_found");
     }
 }

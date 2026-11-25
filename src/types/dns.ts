@@ -59,6 +59,16 @@ export interface PropagationRow {
   latency_by_resolver: Record<string, number>;
 }
 
+export interface SpfLookupNode {
+  mechanism: string;
+  target: string;
+  lookups_added: number;
+  depth: number;
+  raw_record: string | null;
+  error: string | null;
+  children: SpfLookupNode[];
+}
+
 export interface SpfCheck {
   status: "pass" | "warn" | "fail" | "missing";
   summary: string;
@@ -66,6 +76,8 @@ export interface SpfCheck {
   mechanisms: string[];
   all_qualifier: string | null;
   dns_lookup_count: number;
+  recursive_lookup_count: number;
+  lookup_tree: SpfLookupNode[];
   issues: string[];
 }
 
@@ -112,11 +124,75 @@ export interface DnssecCheck {
   issues: string[];
 }
 
+export interface MtaStsCheck {
+  status: "pass" | "warn" | "fail" | "missing";
+  summary: string;
+  dns_record: string | null;
+  policy_id: string | null;
+  policy_fetched: boolean;
+  mode: string | null;
+  max_age: number | null;
+  mx_patterns: string[];
+  raw_policy: string | null;
+  issues: string[];
+}
+
+export interface TlsRptCheck {
+  status: "pass" | "warn" | "fail" | "missing";
+  summary: string;
+  raw_record: string | null;
+  rua: string[];
+  issues: string[];
+}
+
+export interface BimiCheck {
+  status: "pass" | "warn" | "missing";
+  summary: string;
+  raw_record: string | null;
+  logo_url: string | null;
+  authority_url: string | null;
+  issues: string[];
+}
+
 export interface SecurityReport {
   spf: SpfCheck;
   dmarc: DmarcCheck;
   dkim: DkimCheck;
   dnssec: DnssecCheck;
+  mta_sts: MtaStsCheck;
+  tls_rpt: TlsRptCheck;
+  bimi: BimiCheck;
+}
+
+export interface SmtpMxProbe {
+  mx_host: string;
+  priority: number;
+  ip: string | null;
+  ptr_records: string[];
+  fcrdns_valid: boolean;
+  banner_matches_ptr: boolean;
+  reachable: boolean;
+  banner: string | null;
+  ehlo_extensions: string[];
+  supports_starttls: boolean;
+  starttls_negotiated: boolean;
+  tls_version: string | null;
+  tls_cert_valid: boolean | null;
+  tls_cert_cn: string | null;
+  tls_days_remaining: number | null;
+  latency_ms: number;
+  issues: string[];
+  error: string | null;
+}
+
+export interface SmtpDeliverabilityReport {
+  domain: string;
+  mx_count: number;
+  tested_count: number;
+  port25_blocked_suspected: boolean;
+  latency_ms: number;
+  servers: SmtpMxProbe[];
+  issues: string[];
 }
 
 export interface WhoisInfo {
@@ -161,6 +237,34 @@ export interface SecurityHeaderStatus {
   value: string | null;
 }
 
+export interface CookieAuditItem {
+  name: string;
+  secure: boolean;
+  http_only: boolean;
+  same_site: string | null;
+  issues: string[];
+}
+
+export interface WebFileCheck {
+  path: string;
+  label: string;
+  category: "hygiene" | "security" | "exposure";
+  status: "found" | "missing" | "exposed" | "error";
+  http_status: number | null;
+  summary: string;
+  preview: string | null;
+}
+
+export interface WebSecurityAudit {
+  cookies: CookieAuditItem[];
+  cors_acao: string | null;
+  cors_acac: boolean;
+  cors_issue: string | null;
+  mixed_content_urls: string[];
+  files: WebFileCheck[];
+  exposed_count: number;
+}
+
 export interface WebsiteInfo {
   status: "ok" | "no_website" | "error";
   url: string | null;
@@ -180,6 +284,7 @@ export interface WebsiteInfo {
   response_headers: HttpHeaderItem[];
   script_urls: string[];
   stylesheet_urls: string[];
+  security_audit: WebSecurityAudit | null;
   error: string | null;
 }
 
@@ -191,6 +296,7 @@ export interface BlacklistEntry {
   status: "clean" | "listed" | "policy" | "blocked" | "error";
   return_codes: string[];
   detail: string | null;
+  delist_url: string | null;
   latency_ms: number;
 }
 
@@ -199,7 +305,13 @@ export interface HealthCheckItem {
   category: string;
   title: string;
   status: "pass" | "warn" | "fail" | "info";
+  severity: "critical" | "high" | "medium" | "low" | "info";
   detail: string;
+  why_it_matters: string | null;
+  remediation_steps: string[];
+  suggested_snippet: string | null;
+  snippet_label: string | null;
+  reference_url: string | null;
   points: number;
   max_points: number;
 }
@@ -220,6 +332,14 @@ export interface DomainHealthReport {
   checks: HealthCheckItem[];
 }
 
+export interface TakeoverFinding {
+  provider: string;
+  cname_target: string;
+  confidence: "high" | "medium";
+  evidence: string;
+  remediation: string;
+}
+
 export interface SubdomainItem {
   subdomain: string;
   live: boolean;
@@ -227,6 +347,7 @@ export interface SubdomainItem {
   aaaa_records: string[];
   cname: string | null;
   sources: string[];
+  takeover_risk: TakeoverFinding | null;
 }
 
 export interface SubdomainSourceStatus {
@@ -240,6 +361,7 @@ export interface SubdomainDiscoveryReport {
   total_found: number;
   live_count: number;
   ct_only_count: number;
+  takeover_count: number;
   wildcard_detected: boolean;
   wildcard_ips: string[];
   ct_status: "ok" | "timeout" | "error";
@@ -325,6 +447,8 @@ export interface IpNetworkInfo {
   provider_type: "CDN / Anycast" | "Cloud / Hosting" | "Mail Provider" | "Network";
   provider_name: string | null;
   is_anycast_cdn: boolean;
+  rpki_status: "valid" | "invalid" | "not_found" | "unknown" | null;
+  rpki_detail: string | null;
 }
 
 export interface NetworkReport {
@@ -335,6 +459,120 @@ export interface NetworkReport {
   countries: string[];
   cdn_detected: string | null;
   error: string | null;
+}
+
+export interface TracerouteHop {
+  hop: number;
+  ip: string | null;
+  hostname: string | null;
+  rtt_ms: number[];
+  avg_ms: number | null;
+  timed_out: boolean;
+}
+
+export interface TracerouteReport {
+  target: string;
+  resolved_ip: string | null;
+  tool_used: string;
+  completed: boolean;
+  latency_ms: number;
+  hops: TracerouteHop[];
+  error: string | null;
+}
+
+export interface CtLogEntry {
+  id: number;
+  issuer_name: string;
+  issuer_org: string;
+  common_name: string;
+  sans: string[];
+  not_before: string;
+  not_after: string;
+  is_expired: boolean;
+  is_wildcard: boolean;
+  serial_number: string;
+}
+
+export interface CtIssuerSummary {
+  issuer_org: string;
+  total_certs: number;
+  active_certs: number;
+  caa_authorized: boolean | null;
+}
+
+export interface CtHistoryReport {
+  domain: string;
+  total_certs: number;
+  active_certs: number;
+  expired_certs: number;
+  wildcard_certs: number;
+  caa_records: string[];
+  unauthorized_issuers: string[];
+  issuers: CtIssuerSummary[];
+  entries: CtLogEntry[];
+  latency_ms: number;
+  error: string | null;
+}
+
+export interface DnsTraceHop {
+  step: number;
+  level: "Root" | "TLD" | "Authoritative" | "CNAME";
+  zone: string;
+  server_name: string;
+  server_ip: string;
+  rcode: string;
+  authoritative: boolean;
+  latency_ms: number;
+  answers: string[];
+  referrals: string[];
+  glue_ips: string[];
+  has_ds: boolean;
+  has_rrsig: boolean;
+  note: string | null;
+}
+
+export interface AuthoritativeNsCheck {
+  nameserver: string;
+  ip: string | null;
+  reachable: boolean;
+  authoritative: boolean;
+  soa_serial: number | null;
+  ns_records: string[];
+  latency_ms: number;
+  error: string | null;
+}
+
+export interface DnsTraceReport {
+  domain: string;
+  record_type: string;
+  total_ms: number;
+  hops: DnsTraceHop[];
+  authoritative_checks: AuthoritativeNsCheck[];
+  issues: string[];
+  error: string | null;
+}
+
+export interface TyposquatCandidate {
+  domain: string;
+  fuzzer: string;
+  registered: boolean;
+  a_records: string[];
+  aaaa_records: string[];
+  mx_records: string[];
+  ns_records: string[];
+  risk_level: "high" | "medium" | "low" | "none";
+  risk_reason: string;
+}
+
+export interface TyposquatReport {
+  source_domain: string;
+  total_generated: number;
+  total_checked: number;
+  registered_count: number;
+  high_risk_count: number;
+  active_web_count: number;
+  latency_ms: number;
+  candidates: TyposquatCandidate[];
 }
 
 export interface RedirectHop {

@@ -1,4 +1,6 @@
 pub mod bulk;
+pub mod ct;
+pub mod email_probe;
 pub mod health;
 pub mod monitor;
 pub mod network;
@@ -7,6 +9,9 @@ pub mod redirects;
 pub mod security;
 pub mod subdomains;
 pub mod tls;
+pub mod trace;
+pub mod traceroute;
+pub mod typosquat;
 pub mod website;
 pub mod whois;
 
@@ -647,19 +652,11 @@ where
     );
 
     let propagation = compute_propagation(&resolvers, &ordered_type_names);
-    let (health, network, ports) = tokio::join!(
+    let (blacklist_bundle, network, ports) = tokio::join!(
         async {
             let t0 = std::time::Instant::now();
             emit_stage(&on_progress, "health", "Domain Health", "running", None);
-            let out = health::evaluate_domain_health(
-                &domain,
-                &resolvers,
-                &propagation,
-                &security,
-                &whois,
-                &website,
-            )
-            .await;
+            let out = health::run_blacklist_checks(&domain, &resolvers).await;
             emit_stage(
                 &on_progress,
                 "health",
@@ -695,6 +692,20 @@ where
             );
             out
         }
+    );
+
+    let health = health::compute_health_report(
+        &domain,
+        blacklist_bundle,
+        &propagation,
+        &security,
+        &tls,
+        &redirects,
+        &network,
+        &whois,
+        &website,
+        &subdomains,
+        &ports,
     );
 
     Ok(DnsQueryReport {

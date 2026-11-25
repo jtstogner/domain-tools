@@ -1,12 +1,19 @@
+use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
+use std::time::Duration;
+
 use futures::future::join_all;
 use hickory_resolver::proto::dnssec::rdata::DNSSECRData;
 use hickory_resolver::proto::dnssec::PublicKey;
 use hickory_resolver::proto::rr::{RData, RecordType};
 use hickory_resolver::TokioResolver;
+use tokio::time::timeout;
 
 use crate::dns::{build_resolver, txt_to_string};
 use crate::models::{
-    DkimCheck, DkimSelectorResult, DmarcCheck, DnssecCheck, SecurityReport, SpfCheck,
+    BimiCheck, DkimCheck, DkimSelectorResult, DmarcCheck, DnssecCheck, MtaStsCheck, SecurityReport,
+    SpfCheck, SpfLookupNode, TlsRptCheck,
 };
 
 const DEFAULT_DKIM_SELECTORS: &[&str] = &[
@@ -21,6 +28,10 @@ const DEFAULT_DKIM_SELECTORS: &[&str] = &[
     "s2",
     "mx",
 ];
+
+const SPF_LOOKUP_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_SPF_DEPTH: u8 = 5;
+const MAX_SPF_NODES: usize = 25;
 
 async fn fetch_txt_strings(resolver: &TokioResolver, fqdn: &str) -> Result<Vec<String>, String> {
     match resolver.lookup(fqdn, RecordType::TXT).await {
@@ -54,6 +65,8 @@ pub fn analyze_spf(txt_records: &[String]) -> SpfCheck {
             mechanisms: vec![],
             all_qualifier: None,
             dns_lookup_count: 0,
+            recursive_lookup_count: 0,
+            lookup_tree: vec![],
             issues: vec!["Add a v=spf1 TXT record to authorize mail senders.".to_string()],
         };
     }
@@ -62,10 +75,18 @@ pub fn analyze_spf(txt_records: &[String]) -> SpfCheck {
         return SpfCheck {
             status: "fail".to_string(),
             summary: format!("Multiple SPF records detected ({}).", spf_records.len()),
-            raw_record: Some(spf_records.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" | ")),
+            raw_record: Some(
+                spf_records
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            ),
             mechanisms: vec![],
             all_qualifier: None,
             dns_lookup_count: 0,
+            recursive_lookup_count: 0,
+            lookup_tree: vec![],
             issues: vec![
                 "RFC 7208 permits only one v=spf1 TXT record; multiple records cause a PermError."
                     .to_string(),
@@ -110,7 +131,9 @@ pub fn analyze_spf(txt_records: &[String]) -> SpfCheck {
         {
             dns_lookup_count += 1;
             if stripped == "ptr" || stripped.starts_with("ptr:") {
-                issues.push("Mechanism 'ptr' is deprecated and discouraged by RFC 7208.".to_string());
+                issues.push(
+                    "Mechanism 'ptr' is deprecated and discouraged by RFC 7208.".to_string(),
+                );
             }
         }
     }
@@ -125,7 +148,8 @@ pub fn analyze_spf(txt_records: &[String]) -> SpfCheck {
     match all_qualifier.as_deref() {
         Some("+all") => {
             status = "fail";
-            issues.push("'+all' permits any server on the internet to spoof this domain.".to_string());
+            issues
+                .push("'+all' permits any server on the internet to spoof this domain.".to_string());
         }
         Some("?all") => {
             status = "warn";
@@ -142,7 +166,10 @@ pub fn analyze_spf(txt_records: &[String]) -> SpfCheck {
             }
         }
         None => {
-            if !mechanisms.iter().any(|m| m.to_ascii_lowercase().starts_with("redirect=")) {
+            if !mechanisms
+                .iter()
+                .any(|m| m.to_ascii_lowercase().starts_with("redirect="))
+            {
                 status = "warn";
                 issues.push("Missing terminal 'all' mechanism (e.g. -all or ~all).".to_string());
             }
@@ -173,7 +200,231 @@ pub fn analyze_spf(txt_records: &[String]) -> SpfCheck {
         mechanisms,
         all_qualifier,
         dns_lookup_count,
+        recursive_lookup_count: dns_lookup_count,
+        lookup_tree: vec![],
         issues,
+    }
+}
+
+fn is_spf_lookup_mechanism(token: &str) -> bool {
+    let lower = token.to_ascii_lowercase();
+    let stripped = lower.trim_start_matches(['+', '-', '~', '?']);
+    stripped.starts_with("include:")
+        || stripped == "a"
+        || stripped.starts_with("a:")
+        || stripped.starts_with("a/")
+        || stripped == "mx"
+        || stripped.starts_with("mx:")
+        || stripped.starts_with("mx/")
+        || stripped == "ptr"
+        || stripped.starts_with("ptr:")
+        || stripped.starts_with("exists:")
+        || lower.starts_with("redirect=")
+}
+
+fn extract_spf_target(token: &str, root_domain: &str) -> (String, String, bool) {
+    let lower = token.to_ascii_lowercase();
+    let stripped = lower.trim_start_matches(['+', '-', '~', '?']);
+    if let Some(target) = stripped.strip_prefix("include:") {
+        let clean = target.trim().trim_end_matches('.').to_string();
+        return ("include".to_string(), clean, true);
+    }
+    if let Some(target) = lower.strip_prefix("redirect=") {
+        let clean = target.trim().trim_end_matches('.').to_string();
+        return ("redirect".to_string(), clean, true);
+    }
+    let mech_kind = stripped.split([':', '/']).next().unwrap_or(stripped).to_string();
+    let target = stripped
+        .split_once(':')
+        .map(|(_, rest)| rest.split('/').next().unwrap_or(rest).to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| root_domain.to_string());
+    (mech_kind, target, false)
+}
+
+fn resolve_spf_nodes_rec<'a>(
+    resolver: &'a TokioResolver,
+    current_domain: &'a str,
+    mechanisms: &'a [String],
+    depth: u8,
+    visited: &'a mut HashSet<String>,
+    node_count: &'a mut usize,
+) -> Pin<Box<dyn Future<Output = (Vec<SpfLookupNode>, u32)> + Send + 'a>> {
+    Box::pin(async move {
+        let mut nodes = Vec::new();
+        let mut total_lookups: u32 = 0;
+
+        for token in mechanisms {
+            if !is_spf_lookup_mechanism(token) {
+                continue;
+            }
+            if *node_count >= MAX_SPF_NODES {
+                break;
+            }
+            *node_count += 1;
+            total_lookups += 1;
+
+            let (kind, target, is_recursive) = extract_spf_target(token, current_domain);
+
+            if !is_recursive {
+                nodes.push(SpfLookupNode {
+                    mechanism: token.clone(),
+                    target,
+                    lookups_added: 1,
+                    depth,
+                    raw_record: None,
+                    error: None,
+                    children: vec![],
+                });
+                continue;
+            }
+
+            if depth >= MAX_SPF_DEPTH {
+                nodes.push(SpfLookupNode {
+                    mechanism: token.clone(),
+                    target,
+                    lookups_added: 1,
+                    depth,
+                    raw_record: None,
+                    error: Some("Max SPF recursion depth (5) reached".to_string()),
+                    children: vec![],
+                });
+                continue;
+            }
+
+            if target.is_empty() || target.contains('%') {
+                let err_msg = if target.contains('%') {
+                    Some("Macro expansion target not statically resolved".to_string())
+                } else {
+                    Some(format!("Empty {kind} target"))
+                };
+                nodes.push(SpfLookupNode {
+                    mechanism: token.clone(),
+                    target,
+                    lookups_added: 1,
+                    depth,
+                    raw_record: None,
+                    error: err_msg,
+                    children: vec![],
+                });
+                continue;
+            }
+
+            if !visited.insert(target.clone()) {
+                nodes.push(SpfLookupNode {
+                    mechanism: token.clone(),
+                    target,
+                    lookups_added: 1,
+                    depth,
+                    raw_record: None,
+                    error: Some("Circular SPF include/redirect loop detected".to_string()),
+                    children: vec![],
+                });
+                continue;
+            }
+
+            let fqdn = format!("{target}.");
+            let mut raw_record = None;
+            let mut err_msg = None;
+            let mut children = Vec::new();
+            let mut subtree_lookups = 0u32;
+
+            match timeout(SPF_LOOKUP_TIMEOUT, fetch_txt_strings(resolver, &fqdn)).await {
+                Ok(Ok(txts)) => {
+                    let spf_txts: Vec<&String> = txts
+                        .iter()
+                        .filter(|s| {
+                            let l = s.trim_start().to_ascii_lowercase();
+                            l == "v=spf1" || l.starts_with("v=spf1 ")
+                        })
+                        .collect();
+
+                    if spf_txts.is_empty() {
+                        err_msg = Some("No v=spf1 TXT record found at target".to_string());
+                    } else if spf_txts.len() > 1 {
+                        raw_record = Some(spf_txts[0].trim().to_string());
+                        err_msg = Some("Target publishes multiple SPF records".to_string());
+                    } else {
+                        let raw = spf_txts[0].trim().to_string();
+                        let sub_mechs: Vec<String> = raw
+                            .split_whitespace()
+                            .skip(1)
+                            .map(|s| s.to_string())
+                            .collect();
+                        raw_record = Some(raw);
+                        let (sub_nodes, sub_count) = resolve_spf_nodes_rec(
+                            resolver,
+                            &target,
+                            &sub_mechs,
+                            depth + 1,
+                            visited,
+                            node_count,
+                        )
+                        .await;
+                        children = sub_nodes;
+                        subtree_lookups = sub_count;
+                    }
+                }
+                Ok(Err(e)) => {
+                    err_msg = Some(e);
+                }
+                Err(_) => {
+                    err_msg = Some("TXT lookup timed out".to_string());
+                }
+            }
+
+            total_lookups += subtree_lookups;
+            nodes.push(SpfLookupNode {
+                mechanism: token.clone(),
+                target,
+                lookups_added: 1 + subtree_lookups,
+                depth,
+                raw_record,
+                error: err_msg,
+                children,
+            });
+        }
+
+        (nodes, total_lookups)
+    })
+}
+
+async fn resolve_spf_tree(resolver: &TokioResolver, domain: &str, spf: &mut SpfCheck) {
+    if spf.mechanisms.is_empty() {
+        return;
+    }
+    let mut visited = HashSet::new();
+    visited.insert(domain.to_ascii_lowercase());
+    let mut node_count = 0usize;
+
+    let (tree, recursive_count) =
+        resolve_spf_nodes_rec(resolver, domain, &spf.mechanisms, 1, &mut visited, &mut node_count)
+            .await;
+
+    spf.lookup_tree = tree;
+    spf.recursive_lookup_count = recursive_count.max(spf.dns_lookup_count);
+
+    if spf.recursive_lookup_count > 10 {
+        let already_flagged = spf.issues.iter().any(|i| i.contains("limit is 10"));
+        if !already_flagged {
+            spf.issues.push(format!(
+                "Recursive SPF evaluation requires {} DNS lookups (RFC 7208 max is 10 — causes PermError).",
+                spf.recursive_lookup_count
+            ));
+        }
+        if spf.status == "pass" {
+            spf.status = "warn".to_string();
+        }
+        spf.summary = format!(
+            "SPF exceeds 10-lookup limit ({} recursive lookups).",
+            spf.recursive_lookup_count
+        );
+    } else if spf.status == "pass" {
+        spf.summary = format!(
+            "Valid SPF ({}, {}/10 recursive lookups).",
+            spf.all_qualifier.as_deref().unwrap_or("redirect"),
+            spf.recursive_lookup_count
+        );
     }
 }
 
@@ -195,7 +446,9 @@ pub fn analyze_dmarc(txt_records: &[String]) -> DmarcCheck {
             ruf: vec![],
             adkim: None,
             aspf: None,
-            issues: vec!["Publish a v=DMARC1 TXT record at _dmarc to enforce alignment.".to_string()],
+            issues: vec![
+                "Publish a v=DMARC1 TXT record at _dmarc to enforce alignment.".to_string(),
+            ],
         };
     }
 
@@ -203,7 +456,13 @@ pub fn analyze_dmarc(txt_records: &[String]) -> DmarcCheck {
         return DmarcCheck {
             status: "fail".to_string(),
             summary: format!("Multiple DMARC records found ({}).", dmarc_records.len()),
-            raw_record: Some(dmarc_records.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(" | ")),
+            raw_record: Some(
+                dmarc_records
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            ),
             policy: None,
             subdomain_policy: None,
             pct: None,
@@ -211,7 +470,9 @@ pub fn analyze_dmarc(txt_records: &[String]) -> DmarcCheck {
             ruf: vec![],
             adkim: None,
             aspf: None,
-            issues: vec!["Multiple DMARC TXT records cause receivers to ignore DMARC.".to_string()],
+            issues: vec![
+                "Multiple DMARC TXT records cause receivers to ignore DMARC.".to_string(),
+            ],
         };
     }
 
@@ -269,7 +530,9 @@ pub fn analyze_dmarc(txt_records: &[String]) -> DmarcCheck {
     }
     if let Some(p_pct) = pct {
         if p_pct < 100 {
-            issues.push(format!("Policy applies to only {p_pct}% of messages (pct={p_pct})."));
+            issues.push(format!(
+                "Policy applies to only {p_pct}% of messages (pct={p_pct})."
+            ));
         }
     }
 
@@ -282,7 +545,9 @@ pub fn analyze_dmarc(txt_records: &[String]) -> DmarcCheck {
             }
         }
         Some("none") => {
-            issues.push("Policy is set to 'none' (monitoring only; does not block spoofing).".to_string());
+            issues.push(
+                "Policy is set to 'none' (monitoring only; does not block spoofing).".to_string(),
+            );
             "warn"
         }
         Some(other) => {
@@ -296,7 +561,10 @@ pub fn analyze_dmarc(txt_records: &[String]) -> DmarcCheck {
     };
 
     let summary = match policy.as_deref() {
-        Some(p) => format!("DMARC policy p={p}{}.", if rua.is_empty() { " (no rua)" } else { "" }),
+        Some(p) => format!(
+            "DMARC policy p={p}{}.",
+            if rua.is_empty() { " (no rua)" } else { "" }
+        ),
         None => "Invalid DMARC record (missing p= tag).".to_string(),
     };
 
@@ -567,7 +835,10 @@ async fn check_dnssec(resolver: &TokioResolver, domain: &str) -> DnssecCheck {
             dnskey_records,
             validated: false,
             validation_error: None,
-            issues: vec!["Zone is unsigned; consider enabling DNSSEC at your DNS host and registrar.".to_string()],
+            issues: vec![
+                "Zone is unsigned; consider enabling DNSSEC at your DNS host and registrar."
+                    .to_string(),
+            ],
         };
     }
 
@@ -625,6 +896,313 @@ async fn check_dnssec(resolver: &TokioResolver, domain: &str) -> DnssecCheck {
     }
 }
 
+pub fn parse_mta_sts_policy(raw: &str) -> (Option<String>, Option<u64>, Vec<String>) {
+    let mut mode = None;
+    let mut max_age = None;
+    let mut mx_patterns = Vec::new();
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = trimmed.split_once(':') {
+            let key = k.trim().to_ascii_lowercase();
+            let val = v.trim();
+            match key.as_str() {
+                "mode" => mode = Some(val.to_ascii_lowercase()),
+                "max_age" => {
+                    if let Ok(n) = val.parse::<u64>() {
+                        max_age = Some(n);
+                    }
+                }
+                "mx" => {
+                    if !val.is_empty() {
+                        mx_patterns.push(val.to_string());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    (mode, max_age, mx_patterns)
+}
+
+async fn check_mta_sts(resolver: &TokioResolver, domain: &str) -> MtaStsCheck {
+    let fqdn = format!("_mta-sts.{domain}.");
+    let txts = match fetch_txt_strings(resolver, &fqdn).await {
+        Ok(list) => list,
+        Err(_) => vec![],
+    };
+
+    let sts_record = txts
+        .into_iter()
+        .find(|s| s.trim_start().to_ascii_lowercase().starts_with("v=stsv1"));
+
+    let Some(dns_record) = sts_record else {
+        return MtaStsCheck {
+            status: "missing".to_string(),
+            summary: "No _mta-sts TXT record found.".to_string(),
+            dns_record: None,
+            policy_id: None,
+            policy_fetched: false,
+            mode: None,
+            max_age: None,
+            mx_patterns: vec![],
+            raw_policy: None,
+            issues: vec![
+                "Publish _mta-sts TXT and /.well-known/mta-sts.txt to enforce TLS for inbound mail."
+                    .to_string(),
+            ],
+        };
+    };
+
+    let mut policy_id = None;
+    for part in dns_record.split(';') {
+        if let Some((k, v)) = part.trim().split_once('=') {
+            if k.trim().eq_ignore_ascii_case("id") {
+                policy_id = Some(v.trim().to_string());
+            }
+        }
+    }
+
+    let mut issues = Vec::new();
+    let policy_url = format!("https://mta-sts.{domain}/.well-known/mta-sts.txt");
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(3))
+        .user_agent("DomainTools/0.2")
+        .build();
+
+    let mut policy_fetched = false;
+    let mut mode = None;
+    let mut max_age = None;
+    let mut mx_patterns = Vec::new();
+    let mut raw_policy = None;
+
+    if let Ok(c) = client {
+        match c.get(&policy_url).send().await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(bytes) = resp.bytes().await {
+                    let capped = &bytes[..bytes.len().min(16 * 1024)];
+                    let text = String::from_utf8_lossy(capped).into_owned();
+                    let (m, age, mxs) = parse_mta_sts_policy(&text);
+                    policy_fetched = true;
+                    mode = m;
+                    max_age = age;
+                    mx_patterns = mxs;
+                    raw_policy = Some(text);
+                }
+            }
+            Ok(resp) => {
+                issues.push(format!(
+                    "Policy file {policy_url} returned HTTP {}.",
+                    resp.status().as_u16()
+                ));
+            }
+            Err(e) => {
+                issues.push(format!("Failed to fetch {policy_url}: {e}"));
+            }
+        }
+    }
+
+    let status = if !policy_fetched {
+        "fail"
+    } else {
+        match mode.as_deref() {
+            Some("enforce") => {
+                if mx_patterns.is_empty() {
+                    issues.push("MTA-STS policy contains no 'mx:' host patterns.".to_string());
+                    "warn"
+                } else {
+                    "pass"
+                }
+            }
+            Some("testing") => {
+                issues.push("MTA-STS mode is 'testing' (reports only; switch to 'enforce').".to_string());
+                "warn"
+            }
+            Some("none") => {
+                issues.push("MTA-STS mode is 'none' (disabled).".to_string());
+                "warn"
+            }
+            _ => {
+                issues.push("MTA-STS policy file missing valid 'mode:' directive.".to_string());
+                "warn"
+            }
+        }
+    };
+
+    let summary = match (policy_fetched, mode.as_deref()) {
+        (true, Some(m)) => format!("MTA-STS active (mode={m}, {} MX patterns).", mx_patterns.len()),
+        (true, None) => "MTA-STS policy fetched, but mode is invalid.".to_string(),
+        (false, _) => "DNS _mta-sts record found, but HTTPS policy file failed.".to_string(),
+    };
+
+    MtaStsCheck {
+        status: status.to_string(),
+        summary,
+        dns_record: Some(dns_record),
+        policy_id,
+        policy_fetched,
+        mode,
+        max_age,
+        mx_patterns,
+        raw_policy,
+        issues,
+    }
+}
+
+pub fn analyze_tls_rpt(txt_records: &[String]) -> TlsRptCheck {
+    let matching: Vec<&String> = txt_records
+        .iter()
+        .filter(|s| s.trim_start().to_ascii_lowercase().starts_with("v=tlsrptv1"))
+        .collect();
+
+    if matching.is_empty() {
+        return TlsRptCheck {
+            status: "missing".to_string(),
+            summary: "No _smtp._tls TXT record found.".to_string(),
+            raw_record: None,
+            rua: vec![],
+            issues: vec![
+                "Publish a v=TLSRPTv1 record at _smtp._tls to receive SMTP TLS failure reports."
+                    .to_string(),
+            ],
+        };
+    }
+
+    let raw = matching[0].trim().to_string();
+    let mut rua = Vec::new();
+    let mut issues = Vec::new();
+
+    for part in raw.split(';') {
+        if let Some((k, v)) = part.trim().split_once('=') {
+            if k.trim().eq_ignore_ascii_case("rua") {
+                rua.extend(
+                    v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                );
+            }
+        }
+    }
+
+    let status = if rua.is_empty() {
+        issues.push("TLS-RPT record is missing a 'rua=' reporting URI.".to_string());
+        "warn"
+    } else {
+        "pass"
+    };
+
+    TlsRptCheck {
+        status: status.to_string(),
+        summary: if rua.is_empty() {
+            "TLS-RPT record missing rua= destination.".to_string()
+        } else {
+            format!("TLS-RPT active ({} reporting target(s)).", rua.len())
+        },
+        raw_record: Some(raw),
+        rua,
+        issues,
+    }
+}
+
+async fn check_tls_rpt(resolver: &TokioResolver, domain: &str) -> TlsRptCheck {
+    let fqdn = format!("_smtp._tls.{domain}.");
+    match fetch_txt_strings(resolver, &fqdn).await {
+        Ok(txts) => analyze_tls_rpt(&txts),
+        Err(err) => TlsRptCheck {
+            status: "missing".to_string(),
+            summary: "Failed to query _smtp._tls TXT.".to_string(),
+            raw_record: None,
+            rua: vec![],
+            issues: vec![err],
+        },
+    }
+}
+
+pub fn analyze_bimi(txt_records: &[String]) -> BimiCheck {
+    let matching: Vec<&String> = txt_records
+        .iter()
+        .filter(|s| s.trim_start().to_ascii_lowercase().starts_with("v=bimi1"))
+        .collect();
+
+    if matching.is_empty() {
+        return BimiCheck {
+            status: "missing".to_string(),
+            summary: "No BIMI record found at default._bimi.".to_string(),
+            raw_record: None,
+            logo_url: None,
+            authority_url: None,
+            issues: vec![],
+        };
+    }
+
+    let raw = matching[0].trim().to_string();
+    let mut logo_url = None;
+    let mut authority_url = None;
+    let mut issues = Vec::new();
+
+    for part in raw.split(';') {
+        if let Some((k, v)) = part.trim().split_once('=') {
+            let key = k.trim().to_ascii_lowercase();
+            let val = v.trim();
+            if key == "l" && !val.is_empty() {
+                logo_url = Some(val.to_string());
+            } else if key == "a" && !val.is_empty() {
+                authority_url = Some(val.to_string());
+            }
+        }
+    }
+
+    let status = if logo_url
+        .as_deref()
+        .is_some_and(|u| u.starts_with("https://"))
+    {
+        if authority_url.is_none() {
+            issues.push("No VMC/CMC certificate URL (a=) set; some inbox providers require VMC.".to_string());
+        }
+        "pass"
+    } else {
+        issues.push("BIMI record missing valid HTTPS SVG logo URL (l=).".to_string());
+        "warn"
+    };
+
+    BimiCheck {
+        status: status.to_string(),
+        summary: if status == "pass" {
+            if authority_url.is_some() {
+                "BIMI configured with HTTPS logo and VMC authority certificate.".to_string()
+            } else {
+                "BIMI configured with HTTPS SVG logo.".to_string()
+            }
+        } else {
+            "BIMI record incomplete.".to_string()
+        },
+        raw_record: Some(raw),
+        logo_url,
+        authority_url,
+        issues,
+    }
+}
+
+async fn check_bimi(resolver: &TokioResolver, domain: &str) -> BimiCheck {
+    let fqdn = format!("default._bimi.{domain}.");
+    match fetch_txt_strings(resolver, &fqdn).await {
+        Ok(txts) => analyze_bimi(&txts),
+        Err(_) => BimiCheck {
+            status: "missing".to_string(),
+            summary: "No BIMI record found at default._bimi.".to_string(),
+            raw_record: None,
+            logo_url: None,
+            authority_url: None,
+            issues: vec![],
+        },
+    }
+}
+
 pub async fn run_security_checks(
     domain: &str,
     resolver: &TokioResolver,
@@ -633,14 +1211,17 @@ pub async fn run_security_checks(
     let apex_fqdn = format!("{domain}.");
     let dmarc_fqdn = format!("_dmarc.{domain}.");
 
-    let (apex_txts, dmarc_txts, dkim, dnssec) = tokio::join!(
+    let (apex_txts, dmarc_txts, dkim, dnssec, mta_sts, tls_rpt, bimi) = tokio::join!(
         fetch_txt_strings(resolver, &apex_fqdn),
         fetch_txt_strings(resolver, &dmarc_fqdn),
         check_dkim(resolver, domain, custom_dkim_selectors),
         check_dnssec(resolver, domain),
+        check_mta_sts(resolver, domain),
+        check_tls_rpt(resolver, domain),
+        check_bimi(resolver, domain),
     );
 
-    let spf = match apex_txts {
+    let mut spf = match apex_txts {
         Ok(txts) => analyze_spf(&txts),
         Err(err) => SpfCheck {
             status: "missing".to_string(),
@@ -649,9 +1230,15 @@ pub async fn run_security_checks(
             mechanisms: vec![],
             all_qualifier: None,
             dns_lookup_count: 0,
+            recursive_lookup_count: 0,
+            lookup_tree: vec![],
             issues: vec![err],
         },
     };
+
+    if spf.status != "missing" && spf.raw_record.is_some() {
+        resolve_spf_tree(resolver, domain, &mut spf).await;
+    }
 
     let dmarc = match dmarc_txts {
         Ok(txts) => analyze_dmarc(&txts),
@@ -675,6 +1262,9 @@ pub async fn run_security_checks(
         dmarc,
         dkim,
         dnssec,
+        mta_sts,
+        tls_rpt,
+        bimi,
     }
 }
 
@@ -728,7 +1318,11 @@ mod tests {
 
     #[test]
     fn test_parse_dkim_txt() {
-        let active = parse_dkim_txt("google", "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A", None);
+        let active = parse_dkim_txt(
+            "google",
+            "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A",
+            None,
+        );
         assert_eq!(active.status, "pass");
         assert!(active.public_key_present);
         assert_eq!(active.key_type.as_deref(), Some("rsa"));
@@ -736,5 +1330,31 @@ mod tests {
         let revoked = parse_dkim_txt("old", "v=DKIM1; k=rsa; p=", None);
         assert_eq!(revoked.status, "warn");
         assert!(!revoked.public_key_present);
+    }
+
+    #[test]
+    fn test_parse_mta_sts_policy() {
+        let policy = "version: STSv1\nmode: enforce\nmx: *.mail.protection.outlook.com\nmx: mail.example.com\nmax_age: 604800\n";
+        let (mode, max_age, mxs) = parse_mta_sts_policy(policy);
+        assert_eq!(mode.as_deref(), Some("enforce"));
+        assert_eq!(max_age, Some(604800));
+        assert_eq!(mxs, vec!["*.mail.protection.outlook.com", "mail.example.com"]);
+    }
+
+    #[test]
+    fn test_analyze_tls_rpt_and_bimi() {
+        let rpt = analyze_tls_rpt(&["v=TLSRPTv1; rua=mailto:tlsrpt@example.com".to_string()]);
+        assert_eq!(rpt.status, "pass");
+        assert_eq!(rpt.rua, vec!["mailto:tlsrpt@example.com"]);
+
+        let bimi = analyze_bimi(&[
+            "v=BIMI1; l=https://example.com/logo.svg; a=https://example.com/vmc.pem".to_string(),
+        ]);
+        assert_eq!(bimi.status, "pass");
+        assert_eq!(bimi.logo_url.as_deref(), Some("https://example.com/logo.svg"));
+        assert_eq!(
+            bimi.authority_url.as_deref(),
+            Some("https://example.com/vmc.pem")
+        );
     }
 }

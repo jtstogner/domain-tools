@@ -53,6 +53,17 @@ pub struct PropagationRow {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpfLookupNode {
+    pub mechanism: String,
+    pub target: String,
+    pub lookups_added: u32,
+    pub depth: u8,
+    pub raw_record: Option<String>,
+    pub error: Option<String>,
+    pub children: Vec<SpfLookupNode>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpfCheck {
     /// "pass" | "warn" | "fail" | "missing"
     pub status: String,
@@ -61,6 +72,8 @@ pub struct SpfCheck {
     pub mechanisms: Vec<String>,
     pub all_qualifier: Option<String>,
     pub dns_lookup_count: u32,
+    pub recursive_lookup_count: u32,
+    pub lookup_tree: Vec<SpfLookupNode>,
     pub issues: Vec<String>,
 }
 
@@ -116,11 +129,83 @@ pub struct DnssecCheck {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MtaStsCheck {
+    /// "pass" | "warn" | "fail" | "missing"
+    pub status: String,
+    pub summary: String,
+    pub dns_record: Option<String>,
+    pub policy_id: Option<String>,
+    pub policy_fetched: bool,
+    pub mode: Option<String>,
+    pub max_age: Option<u64>,
+    pub mx_patterns: Vec<String>,
+    pub raw_policy: Option<String>,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TlsRptCheck {
+    /// "pass" | "warn" | "fail" | "missing"
+    pub status: String,
+    pub summary: String,
+    pub raw_record: Option<String>,
+    pub rua: Vec<String>,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BimiCheck {
+    /// "pass" | "warn" | "missing"
+    pub status: String,
+    pub summary: String,
+    pub raw_record: Option<String>,
+    pub logo_url: Option<String>,
+    pub authority_url: Option<String>,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecurityReport {
     pub spf: SpfCheck,
     pub dmarc: DmarcCheck,
     pub dkim: DkimCheck,
     pub dnssec: DnssecCheck,
+    pub mta_sts: MtaStsCheck,
+    pub tls_rpt: TlsRptCheck,
+    pub bimi: BimiCheck,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmtpMxProbe {
+    pub mx_host: String,
+    pub priority: u16,
+    pub ip: Option<String>,
+    pub ptr_records: Vec<String>,
+    pub fcrdns_valid: bool,
+    pub banner_matches_ptr: bool,
+    pub reachable: bool,
+    pub banner: Option<String>,
+    pub ehlo_extensions: Vec<String>,
+    pub supports_starttls: bool,
+    pub starttls_negotiated: bool,
+    pub tls_version: Option<String>,
+    pub tls_cert_valid: Option<bool>,
+    pub tls_cert_cn: Option<String>,
+    pub tls_days_remaining: Option<i64>,
+    pub latency_ms: u64,
+    pub issues: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SmtpDeliverabilityReport {
+    pub domain: String,
+    pub mx_count: usize,
+    pub tested_count: usize,
+    pub port25_blocked_suspected: bool,
+    pub latency_ms: u64,
+    pub servers: Vec<SmtpMxProbe>,
+    pub issues: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +257,39 @@ pub struct SecurityHeaderStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CookieAuditItem {
+    pub name: String,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<String>,
+    pub issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebFileCheck {
+    pub path: String,
+    pub label: String,
+    /// "hygiene" | "security" | "exposure"
+    pub category: String,
+    /// "found" | "missing" | "exposed" | "error"
+    pub status: String,
+    pub http_status: Option<u16>,
+    pub summary: String,
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebSecurityAudit {
+    pub cookies: Vec<CookieAuditItem>,
+    pub cors_acao: Option<String>,
+    pub cors_acac: bool,
+    pub cors_issue: Option<String>,
+    pub mixed_content_urls: Vec<String>,
+    pub files: Vec<WebFileCheck>,
+    pub exposed_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebsiteInfo {
     /// "ok" | "no_website" | "error"
     pub status: String,
@@ -192,6 +310,7 @@ pub struct WebsiteInfo {
     pub response_headers: Vec<HttpHeaderItem>,
     pub script_urls: Vec<String>,
     pub stylesheet_urls: Vec<String>,
+    pub security_audit: Option<WebSecurityAudit>,
     pub error: Option<String>,
 }
 
@@ -206,18 +325,26 @@ pub struct BlacklistEntry {
     pub status: String,
     pub return_codes: Vec<String>,
     pub detail: Option<String>,
+    pub delist_url: Option<String>,
     pub latency_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthCheckItem {
     pub id: String,
-    /// "Reputation" | "DNS" | "Email" | "Registration" | "Web"
+    /// "Reputation" | "DNS" | "Email" | "TLS & Web" | "Infrastructure"
     pub category: String,
     pub title: String,
     /// "pass" | "warn" | "fail" | "info"
     pub status: String,
+    /// "critical" | "high" | "medium" | "low" | "info"
+    pub severity: String,
     pub detail: String,
+    pub why_it_matters: Option<String>,
+    pub remediation_steps: Vec<String>,
+    pub suggested_snippet: Option<String>,
+    pub snippet_label: Option<String>,
+    pub reference_url: Option<String>,
     pub points: u32,
     pub max_points: u32,
 }
@@ -243,6 +370,16 @@ pub struct DomainHealthReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TakeoverFinding {
+    pub provider: String,
+    pub cname_target: String,
+    /// "high" | "medium"
+    pub confidence: String,
+    pub evidence: String,
+    pub remediation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubdomainItem {
     pub subdomain: String,
     pub live: bool,
@@ -250,6 +387,7 @@ pub struct SubdomainItem {
     pub aaaa_records: Vec<String>,
     pub cname: Option<String>,
     pub sources: Vec<String>,
+    pub takeover_risk: Option<TakeoverFinding>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -266,6 +404,7 @@ pub struct SubdomainDiscoveryReport {
     pub total_found: usize,
     pub live_count: usize,
     pub ct_only_count: usize,
+    pub takeover_count: usize,
     pub wildcard_detected: bool,
     pub wildcard_ips: Vec<String>,
     /// "ok" | "timeout" | "error"
@@ -359,6 +498,9 @@ pub struct IpNetworkInfo {
     pub provider_type: String,
     pub provider_name: Option<String>,
     pub is_anycast_cdn: bool,
+    /// "valid" | "invalid" | "not_found" | "unknown"
+    pub rpki_status: Option<String>,
+    pub rpki_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,6 +512,132 @@ pub struct NetworkReport {
     pub countries: Vec<String>,
     pub cdn_detected: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TracerouteHop {
+    pub hop: u8,
+    pub ip: Option<String>,
+    pub hostname: Option<String>,
+    pub rtt_ms: Vec<f64>,
+    pub avg_ms: Option<f64>,
+    pub timed_out: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TracerouteReport {
+    pub target: String,
+    pub resolved_ip: Option<String>,
+    pub tool_used: String,
+    pub completed: bool,
+    pub latency_ms: u64,
+    pub hops: Vec<TracerouteHop>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CtLogEntry {
+    pub id: u64,
+    pub issuer_name: String,
+    pub issuer_org: String,
+    pub common_name: String,
+    pub sans: Vec<String>,
+    pub not_before: String,
+    pub not_after: String,
+    pub is_expired: bool,
+    pub is_wildcard: bool,
+    pub serial_number: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CtIssuerSummary {
+    pub issuer_org: String,
+    pub total_certs: usize,
+    pub active_certs: usize,
+    pub caa_authorized: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CtHistoryReport {
+    pub domain: String,
+    pub total_certs: usize,
+    pub active_certs: usize,
+    pub expired_certs: usize,
+    pub wildcard_certs: usize,
+    pub caa_records: Vec<String>,
+    pub unauthorized_issuers: Vec<String>,
+    pub issuers: Vec<CtIssuerSummary>,
+    pub entries: Vec<CtLogEntry>,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsTraceHop {
+    pub step: usize,
+    /// "Root" | "TLD" | "Authoritative" | "CNAME"
+    pub level: String,
+    pub zone: String,
+    pub server_name: String,
+    pub server_ip: String,
+    pub rcode: String,
+    pub authoritative: bool,
+    pub latency_ms: u64,
+    pub answers: Vec<String>,
+    pub referrals: Vec<String>,
+    pub glue_ips: Vec<String>,
+    pub has_ds: bool,
+    pub has_rrsig: bool,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthoritativeNsCheck {
+    pub nameserver: String,
+    pub ip: Option<String>,
+    pub reachable: bool,
+    pub authoritative: bool,
+    pub soa_serial: Option<u32>,
+    pub ns_records: Vec<String>,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DnsTraceReport {
+    pub domain: String,
+    pub record_type: String,
+    pub total_ms: u64,
+    pub hops: Vec<DnsTraceHop>,
+    pub authoritative_checks: Vec<AuthoritativeNsCheck>,
+    pub issues: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TyposquatCandidate {
+    pub domain: String,
+    pub fuzzer: String,
+    pub registered: bool,
+    pub a_records: Vec<String>,
+    pub aaaa_records: Vec<String>,
+    pub mx_records: Vec<String>,
+    pub ns_records: Vec<String>,
+    /// "high" | "medium" | "low" | "none"
+    pub risk_level: String,
+    pub risk_reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TyposquatReport {
+    pub source_domain: String,
+    pub total_generated: usize,
+    pub total_checked: usize,
+    pub registered_count: usize,
+    pub high_risk_count: usize,
+    pub active_web_count: usize,
+    pub latency_ms: u64,
+    pub candidates: Vec<TyposquatCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

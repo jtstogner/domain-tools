@@ -2,14 +2,19 @@ import { invoke } from "@tauri-apps/api/core";
 import { save } from "@tauri-apps/plugin-dialog";
 import type {
   BulkDomainResult,
+  CtHistoryReport,
   DnsOnlyResult,
   DnsQueryReport,
+  DnsTraceReport,
   MonitorProbeRequest,
   MonitorProbeResult,
   PortScanReport,
   QueryRequest,
   RedirectReport,
+  SmtpDeliverabilityReport,
   TlsReport,
+  TracerouteReport,
+  TyposquatReport,
 } from "../types/dns";
 
 function isTauriRuntime(): boolean {
@@ -68,6 +73,34 @@ export async function queryDnsOnly(
     resolverId,
     customResolver: customResolver?.trim() || null,
   });
+}
+
+export async function probeSmtpDeliverability(
+  domain: string,
+): Promise<SmtpDeliverabilityReport> {
+  return invoke<SmtpDeliverabilityReport>("probe_smtp_deliverability", { domain });
+}
+
+export async function runDnsTrace(
+  domain: string,
+  recordType?: string,
+): Promise<DnsTraceReport> {
+  return invoke<DnsTraceReport>("run_dns_trace", {
+    domain,
+    recordType: recordType || null,
+  });
+}
+
+export async function fetchCtHistory(domain: string): Promise<CtHistoryReport> {
+  return invoke<CtHistoryReport>("fetch_ct_history", { domain });
+}
+
+export async function scanTyposquats(domain: string): Promise<TyposquatReport> {
+  return invoke<TyposquatReport>("scan_typosquats", { domain });
+}
+
+export async function runTraceroute(target: string): Promise<TracerouteReport> {
+  return invoke<TracerouteReport>("run_traceroute", { target });
 }
 
 export async function saveExport(

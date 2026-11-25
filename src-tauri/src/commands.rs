@@ -2,8 +2,9 @@ use tauri::Emitter;
 
 use crate::dns;
 use crate::models::{
-    BulkDomainResult, DnsOnlyResult, DnsQueryReport, MonitorProbeRequest, MonitorProbeResult,
-    PortScanReport, QueryRequest, RedirectReport, TlsReport,
+    BulkDomainResult, CtHistoryReport, DnsOnlyResult, DnsQueryReport, DnsTraceReport,
+    MonitorProbeRequest, MonitorProbeResult, PortScanReport, QueryRequest, RedirectReport,
+    SmtpDeliverabilityReport, TlsReport, TracerouteReport, TyposquatReport,
 };
 
 #[tauri::command]
@@ -63,6 +64,34 @@ pub async fn query_dns_only(
     custom_resolver: Option<String>,
 ) -> Result<DnsOnlyResult, String> {
     dns::execute_dns_only(domain, record_types, resolver_id, custom_resolver).await
+}
+
+#[tauri::command]
+pub async fn probe_smtp_deliverability(domain: String) -> Result<SmtpDeliverabilityReport, String> {
+    dns::email_probe::probe_smtp_deliverability(&domain).await
+}
+
+#[tauri::command]
+pub async fn run_dns_trace(
+    domain: String,
+    record_type: Option<String>,
+) -> Result<DnsTraceReport, String> {
+    dns::trace::run_dns_trace(&domain, record_type.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn fetch_ct_history(domain: String) -> Result<CtHistoryReport, String> {
+    dns::ct::fetch_ct_history(&domain).await
+}
+
+#[tauri::command]
+pub async fn scan_typosquats(domain: String) -> Result<TyposquatReport, String> {
+    dns::typosquat::scan_typosquats(&domain).await
+}
+
+#[tauri::command]
+pub async fn run_traceroute(target: String) -> Result<TracerouteReport, String> {
+    dns::traceroute::run_traceroute(&target).await
 }
 
 #[tauri::command]

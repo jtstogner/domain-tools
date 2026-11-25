@@ -10,12 +10,15 @@ use regex::Regex;
 use serde::Deserialize;
 
 use crate::dns::whois::extract_whois_domain;
-use crate::models::{SubdomainDiscoveryReport, SubdomainItem, SubdomainSourceStatus};
+use crate::models::{
+    SubdomainDiscoveryReport, SubdomainItem, SubdomainSourceStatus, TakeoverFinding,
+};
 
 const MAX_PASSIVE_BYTES: usize = 1024 * 1024;
 const MAX_CRTSH_BYTES: usize = 2 * 1024 * 1024;
 const MAX_CT_LIVE_CHECKS: usize = 80;
 const MAX_TOTAL_SUBDOMAINS: usize = 200;
+const MAX_TAKEOVER_CHECKS: usize = 25;
 const PROBE_CONCURRENCY: usize = 24;
 
 const COMMON_SUBDOMAINS: &[&str] = &[
@@ -512,6 +515,178 @@ async fn detect_wildcard(resolver: &TokioResolver, apex: &str) -> BTreeSet<Strin
     set
 }
 
+struct TakeoverFingerprint {
+    provider: &'static str,
+    cname_suffixes: &'static [&'static str],
+    body_markers: &'static [&'static str],
+}
+
+const TAKEOVER_FINGERPRINTS: &[TakeoverFingerprint] = &[
+    TakeoverFingerprint {
+        provider: "GitHub Pages",
+        cname_suffixes: &[".github.io", ".github.com"],
+        body_markers: &["there isn't a github pages site here", "for root urls (like http://example.com/) you must provide an index.html file"],
+    },
+    TakeoverFingerprint {
+        provider: "AWS S3",
+        cname_suffixes: &[".s3.amazonaws.com", ".s3-website", ".amazonaws.com"],
+        body_markers: &["nosuchbucket", "the specified bucket does not exist"],
+    },
+    TakeoverFingerprint {
+        provider: "Microsoft Azure",
+        cname_suffixes: &[".azurewebsites.net", ".cloudapp.net", ".cloudapp.azure.com", ".blob.core.windows.net", ".trafficmanager.net", ".azureedge.net"],
+        body_markers: &["404 web site not found", "nxdomain", "the specified resource does not exist"],
+    },
+    TakeoverFingerprint {
+        provider: "Heroku",
+        cname_suffixes: &[".herokuapp.com", ".herokudns.com"],
+        body_markers: &["no such app", "there's nothing here, yet."],
+    },
+    TakeoverFingerprint {
+        provider: "Netlify",
+        cname_suffixes: &[".netlify.app", ".netlify.com"],
+        body_markers: &["not found - request id:"],
+    },
+    TakeoverFingerprint {
+        provider: "Vercel",
+        cname_suffixes: &[".vercel-dns.com", ".now.sh", ".vercel.app"],
+        body_markers: &["the deployment could not be found on vercel", "deployment_not_found"],
+    },
+    TakeoverFingerprint {
+        provider: "Fastly",
+        cname_suffixes: &[".fastly.net", ".fastlylb.net"],
+        body_markers: &["fastly error: unknown domain"],
+    },
+    TakeoverFingerprint {
+        provider: "Shopify",
+        cname_suffixes: &[".myshopify.com"],
+        body_markers: &["sorry, this shop is currently unavailable", "only one step left!"],
+    },
+    TakeoverFingerprint {
+        provider: "Cloudflare Pages",
+        cname_suffixes: &[".pages.dev"],
+        body_markers: &["project not found"],
+    },
+    TakeoverFingerprint {
+        provider: "Surge.sh",
+        cname_suffixes: &[".surge.sh"],
+        body_markers: &["project not found"],
+    },
+    TakeoverFingerprint {
+        provider: "ReadTheDocs",
+        cname_suffixes: &[".readthedocs.io", ".readthedocs.org"],
+        body_markers: &["unknown to read the docs"],
+    },
+    TakeoverFingerprint {
+        provider: "Zendesk",
+        cname_suffixes: &[".zendesk.com"],
+        body_markers: &["help center closed", "this help center no longer exists"],
+    },
+    TakeoverFingerprint {
+        provider: "Pantheon",
+        cname_suffixes: &[".pantheonsite.io"],
+        body_markers: &["404 error unknown site", "the gods are wise"],
+    },
+    TakeoverFingerprint {
+        provider: "Ghost",
+        cname_suffixes: &[".ghost.io"],
+        body_markers: &["the thing you were looking for is no longer here", "domain error"],
+    },
+    TakeoverFingerprint {
+        provider: "Tumblr",
+        cname_suffixes: &["domains.tumblr.com"],
+        body_markers: &["whatever you were looking for doesn't currently exist at this address"],
+    },
+    TakeoverFingerprint {
+        provider: "Bitbucket",
+        cname_suffixes: &[".bitbucket.io"],
+        body_markers: &["repository not found"],
+    },
+    TakeoverFingerprint {
+        provider: "Unbounce",
+        cname_suffixes: &[".unbouncepages.com"],
+        body_markers: &["the requested url was not found on this server"],
+    },
+];
+
+pub fn match_takeover_provider(cname: &str) -> Option<(&'static str, &'static [&'static str])> {
+    let clean = cname.trim().trim_end_matches('.').to_ascii_lowercase();
+    for fp in TAKEOVER_FINGERPRINTS {
+        if fp
+            .cname_suffixes
+            .iter()
+            .any(|suffix| clean.ends_with(suffix) || clean == suffix.trim_start_matches('.'))
+        {
+            return Some((fp.provider, fp.body_markers));
+        }
+    }
+    None
+}
+
+pub fn check_takeover_body(provider: &str, markers: &[&str], body: &str) -> Option<String> {
+    let lower = body.to_ascii_lowercase();
+    markers
+        .iter()
+        .find(|m| lower.contains(*m))
+        .map(|m| format!("HTTP response matched unclaimed {provider} signature ('{m}')"))
+}
+
+async fn check_single_takeover(
+    resolver: &TokioResolver,
+    client: Option<&reqwest::Client>,
+    subdomain: &str,
+    cname: &str,
+) -> Option<TakeoverFinding> {
+    let target_clean = cname.trim().trim_end_matches('.').to_ascii_lowercase();
+    let target_fqdn = format!("{target_clean}.");
+
+    // Check if the CNAME target itself returns NXDOMAIN (dangling delegation)
+    let a_err = resolver.lookup(&target_fqdn, RecordType::A).await;
+    let is_nxdomain = matches!(&a_err, Err(e) if e.is_nx_domain());
+    let provider_match = match_takeover_provider(&target_clean);
+
+    if is_nxdomain {
+        let provider_label = provider_match
+            .map(|(p, _)| p.to_string())
+            .unwrap_or_else(|| "Dangling CNAME".to_string());
+        return Some(TakeoverFinding {
+            provider: provider_label,
+            cname_target: target_clean.clone(),
+            confidence: "high".to_string(),
+            evidence: format!(
+                "CNAME target '{target_clean}' returns NXDOMAIN while '{subdomain}' still delegates to it."
+            ),
+            remediation: format!(
+                "Delete the DNS CNAME record for '{subdomain}' pointing to '{target_clean}', or immediately claim the target resource."
+            ),
+        });
+    }
+
+    let (provider, markers) = provider_match?;
+    let http = client?;
+
+    for scheme in ["http", "https"] {
+        let url = format!("{scheme}://{subdomain}");
+        if let Ok(Ok(resp)) = tokio::time::timeout(Duration::from_millis(2500), http.get(&url).send()).await {
+            let (body, _) = read_response_capped(resp, 16 * 1024).await;
+            if let Some(evidence) = check_takeover_body(provider, markers, &body) {
+                return Some(TakeoverFinding {
+                    provider: provider.to_string(),
+                    cname_target: target_clean.clone(),
+                    confidence: "high".to_string(),
+                    evidence,
+                    remediation: format!(
+                        "Remove the CNAME record on '{subdomain}' -> '{target_clean}' or provision/verify your {provider} project immediately."
+                    ),
+                });
+            }
+            break;
+        }
+    }
+
+    None
+}
+
 pub fn is_wildcard_match(
     a_records: &[String],
     aaaa_records: &[String],
@@ -642,6 +817,7 @@ pub async fn discover_subdomains(domain: &str) -> SubdomainDiscoveryReport {
                 aaaa_records: aaaa,
                 cname,
                 sources: vec!["DNS Probe".to_string()],
+                takeover_risk: None,
             },
         );
     }
@@ -703,6 +879,7 @@ pub async fn discover_subdomains(domain: &str) -> SubdomainDiscoveryReport {
                 aaaa_records: if live { aaaa } else { vec![] },
                 cname: if live { cname } else { None },
                 sources: srcs,
+                takeover_risk: None,
             },
         );
     }
@@ -718,13 +895,46 @@ pub async fn discover_subdomains(domain: &str) -> SubdomainDiscoveryReport {
             aaaa_records: vec![],
             cname: None,
             sources: srcs,
+            takeover_risk: None,
         });
     }
 
     let mut subdomains: Vec<SubdomainItem> = map.into_values().collect();
+
+    // Run dangling CNAME / subdomain takeover checks concurrently on live CNAME targets.
+    let takeover_candidates: Vec<(String, String)> = subdomains
+        .iter()
+        .filter(|s| s.live)
+        .filter_map(|s| s.cname.as_ref().map(|c| (s.subdomain.clone(), c.clone())))
+        .take(MAX_TAKEOVER_CHECKS)
+        .collect();
+
+    if !takeover_candidates.is_empty() {
+        let client_ref = http_client.as_ref();
+        let res_ref = &resolver;
+        let findings: Vec<(String, Option<TakeoverFinding>)> = stream::iter(takeover_candidates)
+            .map(|(sub, cname)| async move {
+                let finding = check_single_takeover(res_ref, client_ref, &sub, &cname).await;
+                (sub, finding)
+            })
+            .buffer_unordered(12)
+            .collect()
+            .await;
+
+        for (sub, finding) in findings {
+            if let Some(f) = finding {
+                if let Some(item) = subdomains.iter_mut().find(|s| s.subdomain == sub) {
+                    item.takeover_risk = Some(f);
+                }
+            }
+        }
+    }
+
     subdomains.sort_by(|a, b| {
-        b.live
-            .cmp(&a.live)
+        b.takeover_risk
+            .is_some()
+            .cmp(&a.takeover_risk.is_some())
+            .then_with(|| b.live.cmp(&a.live))
             .then_with(|| a.subdomain.cmp(&b.subdomain))
     });
     if subdomains.len() > MAX_TOTAL_SUBDOMAINS {
@@ -734,12 +944,17 @@ pub async fn discover_subdomains(domain: &str) -> SubdomainDiscoveryReport {
     let total_found = subdomains.len();
     let live_count = subdomains.iter().filter(|s| s.live).count();
     let ct_only_count = total_found.saturating_sub(live_count);
+    let takeover_count = subdomains
+        .iter()
+        .filter(|s| s.takeover_risk.is_some())
+        .count();
 
     SubdomainDiscoveryReport {
         apex_domain: apex,
         total_found,
         live_count,
         ct_only_count,
+        takeover_count,
         wildcard_detected: !wildcard_ips.is_empty(),
         wildcard_ips: wildcard_ips.into_iter().collect(),
         ct_status,
@@ -819,5 +1034,18 @@ other.org,9.9.9.9
             &Some("target.example.com".into()),
             &wc
         ));
+    }
+
+    #[test]
+    fn test_takeover_provider_matching() {
+        let (prov, markers) = match_takeover_provider("mysite.github.io.").unwrap();
+        assert_eq!(prov, "GitHub Pages");
+        assert!(check_takeover_body(prov, markers, "There isn't a GitHub Pages site here.").is_some());
+
+        let (s3, s3_markers) = match_takeover_provider("assets.s3.amazonaws.com").unwrap();
+        assert_eq!(s3, "AWS S3");
+        assert!(check_takeover_body(s3, s3_markers, "<Code>NoSuchBucket</Code>").is_some());
+
+        assert!(match_takeover_provider("www.example.com").is_none());
     }
 }

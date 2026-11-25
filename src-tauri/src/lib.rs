@@ -14,6 +14,11 @@ pub fn run() {
             commands::run_bulk_check,
             commands::ping_endpoint,
             commands::query_dns_only,
+            commands::probe_smtp_deliverability,
+            commands::run_dns_trace,
+            commands::fetch_ct_history,
+            commands::scan_typosquats,
+            commands::run_traceroute,
             commands::save_export_file
         ])
         .run(tauri::generate_context!())

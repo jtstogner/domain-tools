@@ -256,7 +256,7 @@ pub fn hostname_matches_cert(host: &str, common_name: Option<&str>, sans: &[Stri
     false
 }
 
-fn parse_cert_der(der: &[u8]) -> Result<TlsCertInfo, String> {
+pub(crate) fn parse_cert_der(der: &[u8]) -> Result<TlsCertInfo, String> {
     let (_, cert) =
         x509_parser::parse_x509_certificate(der).map_err(|e| format!("X.509 parse error: {e}"))?;
 

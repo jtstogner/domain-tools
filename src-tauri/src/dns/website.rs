@@ -2,10 +2,14 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use futures::future::join_all;
 use regex::Regex;
 use reqwest::redirect::Policy;
 
-use crate::models::{DetectedTech, HttpHeaderItem, SecurityHeaderStatus, WebsiteInfo};
+use crate::models::{
+    CookieAuditItem, DetectedTech, HttpHeaderItem, SecurityHeaderStatus, WebFileCheck,
+    WebSecurityAudit, WebsiteInfo,
+};
 
 const MAX_BODY_BYTES: usize = 512 * 1024;
 const MAX_SCRIPT_URLS: usize = 40;
@@ -35,6 +39,7 @@ fn empty_website(status: &str, latency_ms: u64, error: Option<String>) -> Websit
         response_headers: vec![],
         script_urls: vec![],
         stylesheet_urls: vec![],
+        security_audit: None,
         error,
     }
 }
@@ -973,6 +978,357 @@ fn build_security_headers(headers: &[(String, String)]) -> Vec<SecurityHeaderSta
         .collect()
 }
 
+pub fn parse_set_cookie_audit(raw_cookies: &[String], is_https: bool) -> Vec<CookieAuditItem> {
+    let mut items = Vec::new();
+    for raw in raw_cookies {
+        let mut parts = raw.split(';');
+        let first = parts.next().unwrap_or("").trim();
+        let name = first
+            .split_once('=')
+            .map(|(k, _)| k.trim())
+            .unwrap_or(first)
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+
+        let mut secure = false;
+        let mut http_only = false;
+        let mut same_site: Option<String> = None;
+
+        for attr in parts {
+            let trimmed = attr.trim();
+            let lower = trimmed.to_ascii_lowercase();
+            if lower == "secure" {
+                secure = true;
+            } else if lower == "httponly" {
+                http_only = true;
+            } else if let Some(val) = lower.strip_prefix("samesite=") {
+                same_site = Some(val.trim().to_string());
+            }
+        }
+
+        let mut issues = Vec::new();
+        if is_https && !secure {
+            issues.push("Missing 'Secure' flag on HTTPS site.".to_string());
+        }
+        if !http_only {
+            let low_name = name.to_ascii_lowercase();
+            if low_name.contains("sess")
+                || low_name.contains("auth")
+                || low_name.contains("token")
+                || low_name.contains("jwt")
+                || low_name.contains("sid")
+            {
+                issues.push("Session/auth cookie is missing 'HttpOnly' flag.".to_string());
+            } else {
+                issues.push("Missing 'HttpOnly' flag.".to_string());
+            }
+        }
+        match same_site.as_deref() {
+            None => issues.push("Missing 'SameSite' attribute.".to_string()),
+            Some("none") if !secure => {
+                issues.push("'SameSite=None' requires the 'Secure' attribute.".to_string());
+            }
+            _ => {}
+        }
+
+        items.push(CookieAuditItem {
+            name,
+            secure,
+            http_only,
+            same_site,
+            issues,
+        });
+    }
+    items
+}
+
+pub fn evaluate_web_file_body(
+    path: &str,
+    label: &str,
+    category: &str,
+    status_code: Option<u16>,
+    content_type: Option<&str>,
+    body: &str,
+) -> WebFileCheck {
+    let Some(code) = status_code else {
+        return WebFileCheck {
+            path: path.to_string(),
+            label: label.to_string(),
+            category: category.to_string(),
+            status: "error".to_string(),
+            http_status: None,
+            summary: "Request failed or timed out.".to_string(),
+            preview: None,
+        };
+    };
+
+    if code != 200 {
+        return WebFileCheck {
+            path: path.to_string(),
+            label: label.to_string(),
+            category: category.to_string(),
+            status: "missing".to_string(),
+            http_status: Some(code),
+            summary: if category == "exposure" {
+                format!("Not exposed (HTTP {code}).")
+            } else {
+                format!("Not published (HTTP {code}).")
+            },
+            preview: None,
+        };
+    }
+
+    let trimmed = body.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let is_html_page = content_type
+        .map(|ct| ct.to_ascii_lowercase().contains("text/html"))
+        .unwrap_or(false)
+        || lower.starts_with("<!doctype html")
+        || lower.starts_with("<html");
+
+    let preview_str: String = trimmed.lines().take(5).collect::<Vec<_>>().join("\n");
+    let preview = (!preview_str.is_empty()).then(|| {
+        if preview_str.len() > 280 {
+            format!("{}...", &preview_str[..280])
+        } else {
+            preview_str
+        }
+    });
+
+    match path {
+        "/.git/HEAD" => {
+            if !is_html_page && (trimmed.starts_with("ref: refs/") || (trimmed.len() == 40 && trimmed.chars().all(|c| c.is_ascii_hexdigit()))) {
+                return WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: "exposure".to_string(),
+                    status: "exposed".to_string(),
+                    http_status: Some(code),
+                    summary: "CRITICAL: Public .git/HEAD repository metadata is exposed!".to_string(),
+                    preview,
+                };
+            }
+            WebFileCheck {
+                path: path.to_string(),
+                label: label.to_string(),
+                category: "exposure".to_string(),
+                status: "missing".to_string(),
+                http_status: Some(code),
+                summary: "Not exposed (soft-404/non-git response).".to_string(),
+                preview: None,
+            }
+        }
+        "/.env" => {
+            let env_lines = trimmed
+                .lines()
+                .filter(|l| {
+                    let t = l.trim();
+                    !t.is_empty()
+                        && !t.starts_with('#')
+                        && t.split_once('=')
+                            .is_some_and(|(k, _)| {
+                                k.len() >= 3 && k.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+                            })
+                })
+                .count();
+            if !is_html_page && env_lines >= 2 {
+                return WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: "exposure".to_string(),
+                    status: "exposed".to_string(),
+                    http_status: Some(code),
+                    summary: format!("CRITICAL: .env secrets file exposed ({env_lines} key=value lines)!"),
+                    preview: Some("[Redacted — .env key/value signatures detected]".to_string()),
+                };
+            }
+            WebFileCheck {
+                path: path.to_string(),
+                label: label.to_string(),
+                category: "exposure".to_string(),
+                status: "missing".to_string(),
+                http_status: Some(code),
+                summary: "Not exposed (soft-404/non-env response).".to_string(),
+                preview: None,
+            }
+        }
+        "/phpinfo.php" => {
+            if lower.contains("phpinfo()") && lower.contains("php version") {
+                return WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: "exposure".to_string(),
+                    status: "exposed".to_string(),
+                    http_status: Some(code),
+                    summary: "HIGH: phpinfo() diagnostics page is publicly exposed!".to_string(),
+                    preview: None,
+                };
+            }
+            WebFileCheck {
+                path: path.to_string(),
+                label: label.to_string(),
+                category: "exposure".to_string(),
+                status: "missing".to_string(),
+                http_status: Some(code),
+                summary: "Not exposed (soft-404 response).".to_string(),
+                preview: None,
+            }
+        }
+        "/robots.txt" => {
+            if !is_html_page && (lower.contains("user-agent") || lower.contains("disallow") || lower.contains("sitemap")) {
+                WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: category.to_string(),
+                    status: "found".to_string(),
+                    http_status: Some(code),
+                    summary: "Published valid robots.txt.".to_string(),
+                    preview,
+                }
+            } else {
+                WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: category.to_string(),
+                    status: "missing".to_string(),
+                    http_status: Some(code),
+                    summary: "Returned HTML instead of robots.txt directives.".to_string(),
+                    preview: None,
+                }
+            }
+        }
+        "/sitemap.xml" => {
+            if lower.contains("<urlset") || lower.contains("<sitemapindex") {
+                WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: category.to_string(),
+                    status: "found".to_string(),
+                    http_status: Some(code),
+                    summary: "Valid XML sitemap detected.".to_string(),
+                    preview,
+                }
+            } else {
+                WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: category.to_string(),
+                    status: "missing".to_string(),
+                    http_status: Some(code),
+                    summary: "No valid XML <urlset>/<sitemapindex> found.".to_string(),
+                    preview: None,
+                }
+            }
+        }
+        "/.well-known/security.txt" => {
+            if !is_html_page && lower.contains("contact:") {
+                WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: category.to_string(),
+                    status: "found".to_string(),
+                    http_status: Some(code),
+                    summary: "RFC 9116 security.txt published with Contact directive.".to_string(),
+                    preview,
+                }
+            } else {
+                WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: category.to_string(),
+                    status: "missing".to_string(),
+                    http_status: Some(code),
+                    summary: "Missing RFC 9116 security.txt.".to_string(),
+                    preview: None,
+                }
+            }
+        }
+        _ => {
+            // /ads.txt
+            if !is_html_page && trimmed.lines().any(|l| l.contains(',') && !l.trim().starts_with('#')) {
+                WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: category.to_string(),
+                    status: "found".to_string(),
+                    http_status: Some(code),
+                    summary: "Valid ads.txt entries detected.".to_string(),
+                    preview,
+                }
+            } else {
+                WebFileCheck {
+                    path: path.to_string(),
+                    label: label.to_string(),
+                    category: category.to_string(),
+                    status: "missing".to_string(),
+                    http_status: Some(code),
+                    summary: "No ads.txt published.".to_string(),
+                    preview: None,
+                }
+            }
+        }
+    }
+}
+
+async fn audit_web_files(base_origin: &str) -> Vec<WebFileCheck> {
+    let Ok(probe_client) = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_millis(2500))
+        .redirect(Policy::limited(2))
+        .user_agent("DomainTools/1.0 (Security Hygiene Check)")
+        .build()
+    else {
+        return vec![];
+    };
+
+    let targets = [
+        ("/.well-known/security.txt", "Security Policy (security.txt)", "security"),
+        ("/robots.txt", "Crawler Policy (robots.txt)", "hygiene"),
+        ("/sitemap.xml", "XML Sitemap", "hygiene"),
+        ("/ads.txt", "Authorized Sellers (ads.txt)", "hygiene"),
+        ("/.git/HEAD", "Exposed .git Repository", "exposure"),
+        ("/.env", "Exposed .env Secrets", "exposure"),
+        ("/phpinfo.php", "Exposed phpinfo.php", "exposure"),
+    ];
+
+    let futs = targets.into_iter().map(|(path, label, category)| {
+        let client = probe_client.clone();
+        let full_url = format!("{base_origin}{path}");
+        async move {
+            match client.get(&full_url).send().await {
+                Ok(mut resp) => {
+                    let code = resp.status().as_u16();
+                    let ct = resp
+                        .headers()
+                        .get(reqwest::header::CONTENT_TYPE)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    let mut bytes = Vec::with_capacity(4096);
+                    if code == 200 {
+                        while let Ok(Some(chunk)) = resp.chunk().await {
+                            let rem = 8192usize.saturating_sub(bytes.len());
+                            if rem == 0 {
+                                break;
+                            }
+                            bytes.extend_from_slice(&chunk[..chunk.len().min(rem)]);
+                            if bytes.len() >= 8192 {
+                                break;
+                            }
+                        }
+                    }
+                    let body = String::from_utf8_lossy(&bytes);
+                    evaluate_web_file_body(path, label, category, Some(code), ct.as_deref(), &body)
+                }
+                Err(_) => evaluate_web_file_body(path, label, category, None, None, ""),
+            }
+        }
+    });
+
+    join_all(futs).await
+}
+
 pub fn analyze_website_response(
     url: String,
     final_url: String,
@@ -1024,6 +1380,43 @@ pub fn analyze_website_response(
     );
 
     let security_headers = build_security_headers(&headers);
+
+    let raw_cookies: Vec<String> = headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("set-cookie"))
+        .map(|(_, v)| v.clone())
+        .collect();
+    let cookies = parse_set_cookie_audit(&raw_cookies, https);
+    let cors_acao = find_header("access-control-allow-origin");
+    let cors_acac = find_header("access-control-allow-credentials")
+        .is_some_and(|v| v.trim().eq_ignore_ascii_case("true"));
+    let cors_issue = if cors_acao.as_deref() == Some("*") && cors_acac {
+        Some("CORS allows wildcard origin '*' with Allow-Credentials: true.".to_string())
+    } else {
+        None
+    };
+
+    let mixed_content_urls: Vec<String> = if https {
+        script_urls
+            .iter()
+            .chain(stylesheet_urls.iter())
+            .filter(|u| u.to_ascii_lowercase().starts_with("http://"))
+            .cloned()
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let security_audit = Some(WebSecurityAudit {
+        cookies,
+        cors_acao,
+        cors_acac,
+        cors_issue,
+        mixed_content_urls,
+        files: vec![],
+        exposed_count: 0,
+    });
+
     let response_headers = headers
         .into_iter()
         .filter(|(k, _)| !k.eq_ignore_ascii_case("set-cookie"))
@@ -1049,6 +1442,7 @@ pub fn analyze_website_response(
         response_headers,
         script_urls,
         stylesheet_urls,
+        security_audit,
         error: None,
     }
 }
@@ -1102,6 +1496,10 @@ pub async fn inspect_website(domain: &str) -> WebsiteInfo {
     };
 
     let final_url = response.url().to_string();
+    let origin_base = reqwest::Url::parse(&final_url)
+        .ok()
+        .map(|u| format!("{}://{}", u.scheme(), u.host_str().unwrap_or(domain)))
+        .unwrap_or_else(|| attempted_url.clone());
     let http_status = response.status().as_u16();
     let headers: Vec<(String, String)> = response
         .headers()
@@ -1123,17 +1521,24 @@ pub async fn inspect_website(domain: &str) -> WebsiteInfo {
         }
     }
 
-    let latency_ms = start.elapsed().as_millis() as u64;
     let body_html = String::from_utf8_lossy(&body_bytes);
+    let files = audit_web_files(&origin_base).await;
+    let exposed_count = files.iter().filter(|f| f.status == "exposed").count();
 
-    analyze_website_response(
+    let latency_ms = start.elapsed().as_millis() as u64;
+    let mut info = analyze_website_response(
         attempted_url,
         final_url,
         http_status,
         latency_ms,
         headers,
         &body_html,
-    )
+    );
+    if let Some(audit) = info.security_audit.as_mut() {
+        audit.files = files;
+        audit.exposed_count = exposed_count;
+    }
+    info
 }
 
 #[cfg(test)]
@@ -1319,5 +1724,51 @@ mod tests {
         assert!(has_tech(&info, "Vue.js"));
         assert!(has_tech(&info, "Font Awesome"));
         assert!(has_tech(&info, "Google Analytics"));
+    }
+
+    #[test]
+    fn test_cookie_and_exposure_audit() {
+        let cookies = parse_set_cookie_audit(
+            &[
+                "session_id=abc123; Path=/".to_string(),
+                "prefs=dark; Secure; HttpOnly; SameSite=Lax".to_string(),
+            ],
+            true,
+        );
+        assert_eq!(cookies.len(), 2);
+        assert!(!cookies[0].secure);
+        assert!(!cookies[0].http_only);
+        assert!(cookies[0].issues.len() >= 2);
+        assert!(cookies[1].issues.is_empty());
+
+        let git_exposed = evaluate_web_file_body(
+            "/.git/HEAD",
+            "Exposed .git Repository",
+            "exposure",
+            Some(200),
+            Some("text/plain"),
+            "ref: refs/heads/main\n",
+        );
+        assert_eq!(git_exposed.status, "exposed");
+
+        let soft_404 = evaluate_web_file_body(
+            "/.git/HEAD",
+            "Exposed .git Repository",
+            "exposure",
+            Some(200),
+            Some("text/html"),
+            "<!doctype html><html><body>Not found</body></html>",
+        );
+        assert_eq!(soft_404.status, "missing");
+
+        let env_exposed = evaluate_web_file_body(
+            "/.env",
+            "Exposed .env Secrets",
+            "exposure",
+            Some(200),
+            Some("text/plain"),
+            "DB_HOST=localhost\nAPP_KEY=secret123\n",
+        );
+        assert_eq!(env_exposed.status, "exposed");
     }
 }
