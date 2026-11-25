@@ -89,16 +89,19 @@ fn supports_passive_banner(port: u16) -> bool {
 }
 
 pub async fn probe_port(ip: IpAddr, port: u16) -> PortScanItem {
+    probe_port_with_timeout(ip, port, Duration::from_millis(PORT_CONNECT_TIMEOUT_MS)).await
+}
+
+pub async fn probe_port_with_timeout(
+    ip: IpAddr,
+    port: u16,
+    connect_timeout: Duration,
+) -> PortScanItem {
     let (service, category) = lookup_port_meta(port);
     let start = Instant::now();
     let addr = SocketAddr::new(ip, port);
 
-    match timeout(
-        Duration::from_millis(PORT_CONNECT_TIMEOUT_MS),
-        TcpStream::connect(addr),
-    )
-    .await
-    {
+    match timeout(connect_timeout, TcpStream::connect(addr)).await {
         Ok(Ok(mut stream)) => {
             let latency_ms = start.elapsed().as_millis() as u64;
             let banner = if supports_passive_banner(port) {
@@ -371,7 +374,12 @@ mod tests {
         let closed_port = closed_listener.local_addr().unwrap().port();
         drop(closed_listener);
 
-        let closed_item = probe_port(IpAddr::V4(Ipv4Addr::LOCALHOST), closed_port).await;
+        let closed_item = probe_port_with_timeout(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            closed_port,
+            Duration::from_millis(3500),
+        )
+        .await;
         assert_eq!(closed_item.status, "closed");
     }
 
