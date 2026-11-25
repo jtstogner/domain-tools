@@ -5,6 +5,7 @@ import {
   Code2,
   Copy,
   FileCode,
+  FileSearch,
   Globe,
   Info,
   Layers,
@@ -12,6 +13,7 @@ import {
   LockOpen,
   Puzzle,
   Shield,
+  ShieldAlert,
   XCircle,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -48,6 +50,7 @@ interface WebsitePanelProps {
 export function WebsitePanel({ website, onNotify }: WebsitePanelProps) {
   const [assetTab, setAssetTab] = useState<AssetSubTab>("scripts");
   const [copiedHeaders, setCopiedHeaders] = useState(false);
+  const [expandedFile, setExpandedFile] = useState<string | null>(null);
 
   const groupedTech = useMemo(() => {
     const groups = new Map<string, DetectedTech[]>();
@@ -109,6 +112,8 @@ export function WebsitePanel({ website, onNotify }: WebsitePanelProps) {
     onNotify("Copied HTTP response headers");
     setTimeout(() => setCopiedHeaders(false), 1500);
   };
+
+  const audit = website.security_audit;
 
   return (
     <div className="space-y-4">
@@ -305,6 +310,185 @@ export function WebsitePanel({ website, onNotify }: WebsitePanelProps) {
           ))}
         </div>
       </div>
+
+      {/* Web Security Files, Cookies, CORS & Exposure Audit */}
+      {audit && (
+        <div className="space-y-4 rounded-xl border border-line bg-surface p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-sm font-semibold text-ink">
+              <FileSearch className="h-4 w-4 text-sky-600 dark:text-sky-400" />
+              Security Files, Cookies &amp; Exposure Audit
+            </div>
+            {audit.exposed_count > 0 ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/40 bg-rose-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-rose-700 dark:text-rose-300">
+                <ShieldAlert className="h-3.5 w-3.5" />
+                {audit.exposed_count} Sensitive Exposure(s)
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                <CheckCircle2 className="h-3.5 w-3.5" />
+                No Dotfile Exposures
+              </span>
+            )}
+          </div>
+
+          {audit.exposed_count > 0 && (
+            <div className="flex items-start gap-2.5 rounded-lg border border-rose-500/40 bg-rose-500/10 p-3 text-xs text-rose-900 dark:text-rose-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />
+              <div>
+                <span className="font-semibold">CRITICAL EXPOSURE DETECTED:</span> Sensitive repository or environment files are publicly readable over HTTP. Block access immediately and rotate any exposed secrets.
+              </div>
+            </div>
+          )}
+
+          {audit.files.length > 0 && (
+            <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+              {audit.files.map((f) => {
+                const badgeTone =
+                  f.status === "exposed"
+                    ? "border-rose-500/40 bg-rose-500/15 text-rose-700 dark:text-rose-300"
+                    : f.status === "found"
+                      ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                      : "border-line bg-surface-alt text-ink-muted";
+                const isExp = expandedFile === f.path;
+                return (
+                  <div
+                    key={f.path}
+                    className={`rounded-lg border p-3 text-xs ${
+                      f.status === "exposed"
+                        ? "border-rose-500/40 bg-rose-500/[0.06]"
+                        : "border-line bg-canvas"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="font-semibold text-ink">{f.label}</div>
+                        <div className="font-mono text-[11px] text-ink-muted">
+                          {f.path}
+                          {f.http_status !== null ? ` · HTTP ${f.http_status}` : ""}
+                        </div>
+                      </div>
+                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase ${badgeTone}`}>
+                        {f.status}
+                      </span>
+                    </div>
+                    <p className="mt-1.5 text-[11px] text-ink-secondary">{f.summary}</p>
+                    {f.preview && (
+                      <div className="mt-2">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedFile(isExp ? null : f.path)}
+                          className="text-[11px] font-medium text-sky-600 hover:underline dark:text-sky-400"
+                        >
+                          {isExp ? "Hide preview" : "Show preview"}
+                        </button>
+                        {isExp && (
+                          <pre className="mt-1.5 overflow-x-auto rounded border border-line bg-surface p-2 font-mono text-[10px] text-ink-secondary">
+                            {f.preview}
+                          </pre>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* CORS & Mixed Content */}
+          {(audit.cors_acao || audit.cors_issue || audit.mixed_content_urls.length > 0) && (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {(audit.cors_acao || audit.cors_issue) && (
+                <div className="rounded-lg border border-line bg-canvas p-3 text-xs">
+                  <div className="font-semibold text-ink">CORS Headers</div>
+                  <div className="mt-1 font-mono text-[11px] text-ink-secondary">
+                    ACAO: {audit.cors_acao ?? "none"} · Credentials: {String(audit.cors_acac)}
+                  </div>
+                  {audit.cors_issue && (
+                    <div className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                      {audit.cors_issue}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {audit.mixed_content_urls.length > 0 && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+                  <div className="font-semibold text-amber-900 dark:text-amber-200">
+                    Mixed Content ({audit.mixed_content_urls.length} HTTP asset(s) on HTTPS)
+                  </div>
+                  <ul className="mt-1 space-y-0.5 font-mono text-[11px] text-amber-800 dark:text-amber-300">
+                    {audit.mixed_content_urls.slice(0, 5).map((u, idx) => (
+                      <li key={idx} className="truncate">
+                        {u}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Cookie Security Flags */}
+          <div>
+            <div className="mb-2 text-xs font-semibold text-ink">
+              Set-Cookie Security Flags ({audit.cookies.length})
+            </div>
+            {audit.cookies.length === 0 ? (
+              <div className="rounded-lg border border-line bg-canvas px-3 py-2 text-[11px] text-ink-muted">
+                No Set-Cookie headers returned on initial page load.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-lg border border-line">
+                <table className="w-full border-collapse text-left text-xs">
+                  <thead>
+                    <tr className="border-b border-line bg-surface-alt text-[10px] font-semibold uppercase tracking-wider text-ink-muted">
+                      <th className="px-3 py-2">Cookie</th>
+                      <th className="px-3 py-2">Secure</th>
+                      <th className="px-3 py-2">HttpOnly</th>
+                      <th className="px-3 py-2">SameSite</th>
+                      <th className="px-3 py-2">Issues</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-line bg-canvas">
+                    {audit.cookies.map((c, idx) => (
+                      <tr key={`${c.name}-${idx}`}>
+                        <td className="px-3 py-2 font-mono font-medium text-ink">
+                          {c.name}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[11px]">
+                          {c.secure ? (
+                            <span className="text-emerald-700 dark:text-emerald-300">Yes</span>
+                          ) : (
+                            <span className="text-rose-700 dark:text-rose-300">No</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[11px]">
+                          {c.http_only ? (
+                            <span className="text-emerald-700 dark:text-emerald-300">Yes</span>
+                          ) : (
+                            <span className="text-amber-700 dark:text-amber-300">No</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 font-mono text-[11px] text-ink-secondary">
+                          {c.same_site ?? "missing"}
+                        </td>
+                        <td className="px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+                          {c.issues.length > 0 ? (
+                            c.issues.join(" ")
+                          ) : (
+                            <span className="text-emerald-700 dark:text-emerald-300">OK</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Assets & Headers Inspector */}
       <div className="overflow-hidden rounded-xl border border-line bg-surface">

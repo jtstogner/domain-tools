@@ -40,8 +40,12 @@ pub fn parse_traceroute_output(stdout: &str) -> Vec<TracerouteHop> {
         if tokens.is_empty() {
             continue;
         }
-        // Linux tracepath lines start with "1:" or "1?:"
-        let hop_str = tokens[0].trim_end_matches([':', '?']);
+        // Skip tracepath PMTU header lines like "1?: [LOCALHOST] pmtu 1500"
+        if tokens[0].ends_with("?:") || trimmed.contains("[LOCALHOST]") {
+            continue;
+        }
+        // Linux tracepath lines start with "1:"
+        let hop_str = tokens[0].trim_end_matches(':');
         let Ok(hop_num) = hop_str.parse::<u8>() else {
             continue;
         };

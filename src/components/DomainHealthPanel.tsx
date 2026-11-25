@@ -2,9 +2,12 @@ import {
   AlertTriangle,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Copy,
-  Download,
   ExternalLink,
+  FileText,
+  Globe,
   HeartPulse,
   Info,
   ShieldAlert,
@@ -22,6 +25,34 @@ import type {
   DomainHealthReport,
   HealthCheckItem,
 } from "../types/dns";
+
+const SEVERITY_ORDER: Record<string, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+  info: 4,
+};
+
+function SeverityBadge({ severity }: { severity: HealthCheckItem["severity"] }) {
+  const tone =
+    severity === "critical"
+      ? "border-rose-500/50 bg-rose-500/15 text-rose-700 dark:text-rose-300"
+      : severity === "high"
+        ? "border-orange-500/50 bg-orange-500/15 text-orange-700 dark:text-orange-300"
+        : severity === "medium"
+          ? "border-amber-500/50 bg-amber-500/15 text-amber-700 dark:text-amber-300"
+          : severity === "low"
+            ? "border-sky-500/40 bg-sky-500/15 text-sky-700 dark:text-sky-300"
+            : "border-line bg-surface-alt text-ink-muted";
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${tone}`}
+    >
+      {severity}
+    </span>
+  );
+}
 
 function BlacklistBadge({ status }: { status: BlacklistEntry["status"] }) {
   switch (status) {
@@ -63,27 +94,6 @@ function BlacklistBadge({ status }: { status: BlacklistEntry["status"] }) {
   }
 }
 
-function SeverityBadge({ severity }: { severity: HealthCheckItem["severity"] }) {
-  const tone =
-    severity === "critical"
-      ? "border-rose-500/40 bg-rose-500/15 text-rose-700 dark:text-rose-300"
-      : severity === "high"
-        ? "border-orange-500/40 bg-orange-500/15 text-orange-700 dark:text-orange-300"
-        : severity === "medium"
-          ? "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300"
-          : severity === "low"
-            ? "border-sky-500/40 bg-sky-500/15 text-sky-700 dark:text-sky-300"
-            : "border-line bg-surface-alt text-ink-muted";
-
-  return (
-    <span
-      className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${tone}`}
-    >
-      {severity}
-    </span>
-  );
-}
-
 function BlacklistTable({
   title,
   entries,
@@ -114,7 +124,7 @@ function BlacklistTable({
                 <th className="px-4 py-2.5">Blacklist</th>
                 <th className="px-4 py-2.5">Target</th>
                 <th className="px-4 py-2.5">Status</th>
-                <th className="px-4 py-2.5">Details / Delist</th>
+                <th className="px-4 py-2.5">Details / Code</th>
                 <th className="px-4 py-2.5 text-right">Latency</th>
               </tr>
             </thead>
@@ -129,15 +139,15 @@ function BlacklistTable({
                   }
                 >
                   <td className="px-4 py-2.5 align-top">
-                    <div className="font-medium text-ink">{entry.list_name}</div>
+                    <div className="font-medium text-ink">
+                      {entry.list_name}
+                    </div>
                     <div className="font-mono text-[11px] text-ink-muted">
                       {entry.zone}
                     </div>
                   </td>
                   <td className="px-4 py-2.5 align-top">
-                    <div className="font-mono text-ink-secondary">
-                      {entry.target}
-                    </div>
+                    <div className="font-mono text-ink-secondary">{entry.target}</div>
                     <div className="text-[11px] text-ink-muted">
                       {entry.target_role}
                     </div>
@@ -161,9 +171,9 @@ function BlacklistTable({
                         href={entry.delist_url}
                         target="_blank"
                         rel="noreferrer"
-                        className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-rose-700 underline decoration-rose-500/40 hover:text-rose-600 dark:text-rose-300"
+                        className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-sky-600 hover:underline dark:text-sky-400"
                       >
-                        Delisting portal
+                        Delist / Lookup Portal
                         <ExternalLink className="h-3 w-3" />
                       </a>
                     )}
@@ -181,14 +191,6 @@ function BlacklistTable({
   );
 }
 
-const SEVERITY_ORDER: Record<string, number> = {
-  critical: 0,
-  high: 1,
-  medium: 2,
-  low: 3,
-  info: 4,
-};
-
 interface DomainHealthPanelProps {
   health: DomainHealthReport;
   report: DnsQueryReport;
@@ -200,18 +202,17 @@ export function DomainHealthPanel({
   report,
   onNotify,
 }: DomainHealthPanelProps) {
+  const [checkFilter, setCheckFilter] = useState<"all" | "fix" | "pass">("all");
+  const [expandedChecks, setExpandedChecks] = useState<Record<string, boolean>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [checkFilter, setCheckFilter] = useState<"all" | "needs_fix" | "passed">(
-    "all",
-  );
 
-  const actionableFixes = useMemo(() => {
-    return health.checks
+  const actionable = useMemo(() => {
+    return [...health.checks]
       .filter((c) => c.status === "fail" || c.status === "warn")
       .sort((a, b) => {
-        const sd =
+        const sev =
           (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9);
-        if (sd !== 0) return sd;
+        if (sev !== 0) return sev;
         return b.max_points - b.points - (a.max_points - a.points);
       });
   }, [health.checks]);
@@ -228,33 +229,27 @@ export function DomainHealthPanel({
   }, [health.checks]);
 
   const filteredChecks = useMemo(() => {
-    if (checkFilter === "needs_fix") {
-      return health.checks.filter(
-        (c) => c.status === "fail" || c.status === "warn",
-      );
-    }
-    if (checkFilter === "passed") {
-      return health.checks.filter(
-        (c) => c.status === "pass" || c.status === "info",
-      );
-    }
-    return health.checks;
+    return health.checks.filter((c) => {
+      if (checkFilter === "fix") return c.status === "fail" || c.status === "warn";
+      if (checkFilter === "pass") return c.status === "pass" || c.status === "info";
+      return true;
+    });
   }, [health.checks, checkFilter]);
 
-  const handleCopySnippet = async (id: string, snippet: string) => {
-    await copyToClipboard(snippet);
+  const handleCopySnippet = async (id: string, text: string, label?: string | null) => {
+    await copyToClipboard(text);
     setCopiedId(id);
-    onNotify("Copied remediation snippet");
+    onNotify(`Copied ${label ?? "remediation snippet"}`);
     setTimeout(() => setCopiedId((prev) => (prev === id ? null : prev)), 1500);
   };
 
-  const handleExportAudit = async (ext: "md" | "html") => {
+  const handleExportAudit = async (kind: "md" | "html") => {
     const content =
-      ext === "md" ? formatAsAuditMarkdown(report) : formatAsAuditHtml(report);
-    const filename = `${report.domain}-audit.${ext}`;
+      kind === "md" ? formatAsAuditMarkdown(report) : formatAsAuditHtml(report);
+    const filename = `${report.domain}-audit.${kind}`;
     try {
-      const ok = await saveExport(filename, ext, content);
-      if (ok) onNotify(`Saved ${filename}`);
+      const saved = await saveExport(filename, kind, content);
+      if (saved) onNotify(`Saved ${filename}`);
     } catch (err) {
       onNotify(`Export failed: ${String(err)}`);
     }
@@ -323,56 +318,31 @@ export function DomainHealthPanel({
               <p className="mt-1.5 text-xs leading-relaxed text-ink-muted">
                 {health.summary}
               </p>
-              <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleExportAudit("md")}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface-alt px-2.5 py-1 text-[11px] font-medium text-ink-secondary hover:border-sky-500/50 hover:text-ink"
-                >
-                  <Download className="h-3 w-3 text-sky-600 dark:text-sky-400" />
-                  Export Audit (.md)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleExportAudit("html")}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface-alt px-2.5 py-1 text-[11px] font-medium text-ink-secondary hover:border-sky-500/50 hover:text-ink"
-                >
-                  <Download className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
-                  Export Audit (.html)
-                </button>
-              </div>
             </div>
           </div>
 
-          {/* Category mini-bars */}
-          <div className="grid grid-cols-2 gap-2 border-t border-line pt-3 sm:grid-cols-5">
-            {categoryScores.map(([cat, val]) => {
-              const pct = val.max > 0 ? Math.round((val.pts / val.max) * 100) : 100;
-              const barColor =
-                pct >= 80
-                  ? "bg-emerald-500"
-                  : pct >= 55
-                    ? "bg-amber-500"
-                    : "bg-rose-500";
-              return (
-                <div key={cat} className="space-y-1">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className="truncate font-medium text-ink-secondary">
-                      {cat}
-                    </span>
-                    <span className="font-mono text-ink-muted">
-                      {val.pts}/{val.max}
-                    </span>
-                  </div>
-                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-alt">
-                    <div
-                      className={`h-full rounded-full ${barColor}`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">
+            <span className="text-[11px] text-ink-muted">
+              {actionable.length} actionable remediation{actionable.length === 1 ? "" : "s"} found
+            </span>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => void handleExportAudit("md")}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface-alt px-2.5 py-1 text-[11px] font-medium text-ink-secondary hover:border-sky-500/50 hover:text-ink"
+              >
+                <FileText className="h-3 w-3 text-violet-600 dark:text-violet-400" />
+                Export .md
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleExportAudit("html")}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface-alt px-2.5 py-1 text-[11px] font-medium text-ink-secondary hover:border-sky-500/50 hover:text-ink"
+              >
+                <Globe className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
+                Export .html
+              </button>
+            </div>
           </div>
         </div>
 
@@ -408,36 +378,64 @@ export function DomainHealthPanel({
         </div>
       </div>
 
+      {/* Category Breakdown Mini-Bars */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {categoryScores.map(([cat, val]) => {
+          const pct = val.max > 0 ? Math.round((val.pts / val.max) * 100) : 100;
+          const barTone =
+            pct >= 85
+              ? "bg-emerald-500"
+              : pct >= 60
+                ? "bg-amber-500"
+                : "bg-rose-500";
+          return (
+            <div key={cat} className="rounded-xl border border-line bg-surface p-3">
+              <div className="flex items-center justify-between gap-1">
+                <span className="truncate text-[11px] font-semibold text-ink-secondary">
+                  {cat}
+                </span>
+                <span className="font-mono text-[11px] font-bold text-ink">
+                  {val.pts}/{val.max}
+                </span>
+              </div>
+              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-surface-alt">
+                <div
+                  className={`h-full rounded-full ${barTone}`}
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
       {/* Prioritized "Fix First" Action Plan */}
       <div className="overflow-hidden rounded-xl border border-line bg-surface">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface-alt px-4 py-2.5">
+        <div className="flex items-center justify-between border-b border-line bg-surface-alt px-4 py-2.5">
           <div className="flex items-center gap-2">
-            <Wrench className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+            <Wrench className="h-4 w-4 text-sky-600 dark:text-sky-400" />
             <span className="text-xs font-semibold text-ink">
-              Actionable Remediation Plan (&ldquo;Fix First&rdquo;)
+              Prioritized Fix-First Action Plan
             </span>
           </div>
           <span className="font-mono text-[11px] text-ink-muted">
-            {actionableFixes.length === 0
-              ? "0 issues found"
-              : `${actionableFixes.length} item${actionableFixes.length === 1 ? "" : "s"} prioritized by risk & impact`}
+            {actionable.length} item{actionable.length === 1 ? "" : "s"}
           </span>
         </div>
 
-        {actionableFixes.length === 0 ? (
+        {actionable.length === 0 ? (
           <div className="flex items-center gap-2.5 px-4 py-5 text-xs text-emerald-700 dark:text-emerald-300">
             <CheckCircle2 className="h-4 w-4 shrink-0" />
             <span>
-              All audited checks passed. No immediate remediations are needed for{" "}
-              <span className="font-mono font-semibold">{report.domain}</span>.
+              All audited checks passed — no configuration or security remediations needed.
             </span>
           </div>
         ) : (
           <div className="divide-y divide-line">
-            {actionableFixes.map((chk) => {
+            {actionable.map((chk) => {
               const gain = chk.max_points - chk.points;
               return (
-                <div key={chk.id} className="space-y-2.5 p-4">
+                <div key={`fix-${chk.id}`} className="space-y-2.5 p-4">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div className="flex flex-wrap items-center gap-2">
                       <SeverityBadge severity={chk.severity} />
@@ -448,59 +446,48 @@ export function DomainHealthPanel({
                         {chk.category}
                       </span>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {gain > 0 && (
-                        <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 font-mono text-[11px] font-semibold text-sky-700 dark:text-sky-300">
-                          +{gain} pts
-                        </span>
-                      )}
-                      {chk.reference_url && (
-                        <a
-                          href={chk.reference_url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-alt px-2 py-0.5 text-[11px] text-ink-secondary hover:border-sky-500/40 hover:text-ink"
-                        >
-                          Docs / Delist
-                          <ExternalLink className="h-3 w-3" />
-                        </a>
-                      )}
-                    </div>
+                    {gain > 0 && (
+                      <span className="rounded-full border border-sky-500/30 bg-sky-500/10 px-2 py-0.5 font-mono text-[11px] font-semibold text-sky-700 dark:text-sky-300">
+                        +{gain} pts
+                      </span>
+                    )}
                   </div>
 
                   <p className="text-xs text-ink-secondary">{chk.detail}</p>
 
                   {chk.why_it_matters && (
-                    <p className="text-[11px] leading-relaxed text-ink-muted">
-                      <span className="font-semibold text-ink-secondary">
-                        Why it matters:{" "}
-                      </span>
+                    <div className="rounded-lg border border-line bg-surface-alt/70 px-3 py-2 text-[11px] leading-relaxed text-ink-muted">
+                      <span className="font-semibold text-ink-secondary">Why it matters: </span>
                       {chk.why_it_matters}
-                    </p>
+                    </div>
                   )}
 
                   {chk.remediation_steps.length > 0 && (
                     <ol className="list-decimal space-y-1 pl-5 text-xs text-ink-secondary">
-                      {chk.remediation_steps.map((step, idx) => (
-                        <li key={idx}>{step}</li>
+                      {chk.remediation_steps.map((step, i) => (
+                        <li key={i}>{step}</li>
                       ))}
                     </ol>
                   )}
 
                   {chk.suggested_snippet && (
-                    <div className="overflow-hidden rounded-lg border border-line bg-canvas">
+                    <div className="overflow-hidden rounded-lg border border-line-strong bg-canvas">
                       <div className="flex items-center justify-between border-b border-line bg-surface-alt px-3 py-1.5">
-                        <span className="text-[11px] font-medium text-ink-secondary">
+                        <span className="text-[11px] font-medium text-ink-muted">
                           {chk.snippet_label ?? "Recommended Configuration"}
                         </span>
                         <button
                           type="button"
                           onClick={() =>
-                            void handleCopySnippet(chk.id, chk.suggested_snippet!)
+                            void handleCopySnippet(
+                              `snip-${chk.id}`,
+                              chk.suggested_snippet!,
+                              chk.snippet_label,
+                            )
                           }
-                          className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium text-ink-secondary hover:bg-surface hover:text-sky-600 dark:hover:text-sky-300"
+                          className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium text-sky-700 hover:bg-sky-500/10 dark:text-sky-300"
                         >
-                          {copiedId === chk.id ? (
+                          {copiedId === `snip-${chk.id}` ? (
                             <>
                               <Check className="h-3 w-3 text-emerald-500" />
                               Copied
@@ -516,6 +503,20 @@ export function DomainHealthPanel({
                       <pre className="overflow-x-auto p-3 font-mono text-[11px] leading-relaxed text-ink">
                         {chk.suggested_snippet}
                       </pre>
+                    </div>
+                  )}
+
+                  {chk.reference_url && (
+                    <div className="flex items-center gap-3 text-[11px]">
+                      <a
+                        href={chk.reference_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 font-medium text-sky-600 hover:underline dark:text-sky-400"
+                      >
+                        Open Reference / Delisting Portal
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
                     </div>
                   )}
                 </div>
@@ -543,24 +544,24 @@ export function DomainHealthPanel({
       <div className="overflow-hidden rounded-xl border border-line bg-surface">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-surface-alt px-4 py-2.5">
           <span className="text-xs font-semibold text-ink">
-            Health &amp; Safety Audit Breakdown ({health.checks.length} checks)
+            Full Audit Breakdown ({health.checks.length} checks)
           </span>
-          <div className="inline-flex rounded-lg border border-line bg-canvas p-0.5 text-[11px]">
+          <div className="flex items-center gap-1">
             {(
               [
                 ["all", "All"],
-                ["needs_fix", `Needs Fix (${actionableFixes.length})`],
-                ["passed", "Passed / Info"],
+                ["fix", `Needs Fix (${actionable.length})`],
+                ["pass", "Passed / Info"],
               ] as const
             ).map(([id, label]) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setCheckFilter(id)}
-                className={`rounded-md px-2.5 py-0.5 font-medium transition ${
+                className={`rounded-md border px-2 py-0.5 text-[11px] font-medium transition ${
                   checkFilter === id
-                    ? "bg-surface text-ink shadow-sm ring-1 ring-line"
-                    : "text-ink-muted hover:text-ink"
+                    ? "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300"
+                    : "border-line bg-canvas text-ink-muted hover:text-ink"
                 }`}
               >
                 {label}
@@ -581,28 +582,70 @@ export function DomainHealthPanel({
                 <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky-600 dark:text-sky-400" />
               );
 
+            const hasExtra =
+              chk.remediation_steps.length > 0 || Boolean(chk.suggested_snippet);
+            const isExpanded = Boolean(expandedChecks[chk.id]);
+
             return (
-              <div
-                key={chk.id}
-                className="flex items-start justify-between gap-4 px-4 py-3"
-              >
-                <div className="flex items-start gap-3">
-                  {icon}
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-xs font-semibold text-ink">
-                        {chk.title}
-                      </span>
-                      <span className="rounded border border-line bg-canvas px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-ink-muted">
-                        {chk.category}
-                      </span>
+              <div key={chk.id} className="px-4 py-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-3">
+                    {icon}
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-semibold text-ink">
+                          {chk.title}
+                        </span>
+                        <span className="rounded border border-line bg-canvas px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-ink-muted">
+                          {chk.category}
+                        </span>
+                        {(chk.status === "fail" || chk.status === "warn") && (
+                          <SeverityBadge severity={chk.severity} />
+                        )}
+                      </div>
+                      <p className="mt-0.5 text-xs text-ink-muted">{chk.detail}</p>
                     </div>
-                    <p className="mt-0.5 text-xs text-ink-muted">{chk.detail}</p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <span className="font-mono text-xs text-ink-secondary">
+                      {chk.points}/{chk.max_points}
+                    </span>
+                    {hasExtra && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedChecks((prev) => ({
+                            ...prev,
+                            [chk.id]: !prev[chk.id],
+                          }))
+                        }
+                        className="rounded p-1 text-ink-muted hover:bg-surface-alt hover:text-ink"
+                        title="Toggle remediation details"
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        ) : (
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        )}
+                      </button>
+                    )}
                   </div>
                 </div>
-                <div className="shrink-0 font-mono text-xs text-ink-secondary">
-                  {chk.points}/{chk.max_points}
-                </div>
+
+                {hasExtra && isExpanded && (
+                  <div className="mt-2.5 ml-7 space-y-2 rounded-lg border border-line bg-canvas p-3 text-xs">
+                    {chk.remediation_steps.map((s, idx) => (
+                      <div key={idx} className="text-ink-secondary">
+                        {idx + 1}. {s}
+                      </div>
+                    ))}
+                    {chk.suggested_snippet && (
+                      <pre className="overflow-x-auto rounded border border-line bg-surface p-2 font-mono text-[11px] text-ink">
+                        {chk.suggested_snippet}
+                      </pre>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}

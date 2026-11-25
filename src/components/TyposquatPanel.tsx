@@ -1,52 +1,44 @@
 import {
   AlertTriangle,
   ArrowUpRight,
-  Check,
   Copy,
-  Download,
-  Loader2,
-  Mail,
+  Play,
+  RefreshCw,
   Search,
   ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { copyToClipboard, saveExport, scanTyposquats } from "../lib/api";
+import { copyToClipboard, scanTyposquats } from "../lib/api";
 import type { TyposquatReport } from "../types/dns";
 
 interface TyposquatPanelProps {
-  defaultDomain: string;
+  domain: string;
   onInspectDomain: (domain: string) => void;
   onNotify: (msg: string) => void;
 }
 
-type RiskFilter = "all" | "registered" | "high" | "web";
-
 export function TyposquatPanel({
-  defaultDomain,
+  domain,
   onInspectDomain,
   onNotify,
 }: TyposquatPanelProps) {
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<TyposquatReport | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<RiskFilter>("registered");
-  const [fuzzerFilter, setFuzzerFilter] = useState<string>("all");
-  const [searchText, setSearchText] = useState("");
-  const [copiedDomain, setCopiedDomain] = useState<string | null>(null);
+  const [filterMode, setFilterMode] = useState<"registered" | "high" | "web" | "all">("registered");
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     setReport(null);
     setError(null);
-    setFuzzerFilter("all");
-    setSearchText("");
-  }, [defaultDomain]);
+  }, [domain]);
 
   const handleScan = async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await scanTyposquats(defaultDomain);
+      const res = await scanTyposquats(domain);
       setReport(res);
     } catch (err) {
       setError(String(err));
@@ -55,77 +47,47 @@ export function TyposquatPanel({
     }
   };
 
-  const fuzzers = useMemo(() => {
-    if (!report) return [];
-    return Array.from(new Set(report.candidates.map((c) => c.fuzzer))).sort();
-  }, [report]);
-
   const filtered = useMemo(() => {
     if (!report) return [];
-    const needle = searchText.trim().toLowerCase();
+    const needle = search.trim().toLowerCase();
     return report.candidates.filter((c) => {
-      if (filter === "registered" && !c.registered) return false;
-      if (filter === "high" && c.risk_level !== "high") return false;
-      if (
-        filter === "web" &&
-        c.a_records.length === 0 &&
-        c.aaaa_records.length === 0
-      ) {
+      if (filterMode === "registered" && !c.registered) return false;
+      if (filterMode === "high" && c.risk_level !== "high") return false;
+      if (filterMode === "web" && c.a_records.length === 0 && c.aaaa_records.length === 0) {
         return false;
       }
-      if (fuzzerFilter !== "all" && c.fuzzer !== fuzzerFilter) return false;
-      if (needle && !c.domain.toLowerCase().includes(needle)) return false;
+      if (needle) {
+        const hit =
+          c.domain.toLowerCase().includes(needle) ||
+          c.fuzzer.toLowerCase().includes(needle);
+        if (!hit) return false;
+      }
       return true;
     });
-  }, [report, filter, fuzzerFilter, searchText]);
+  }, [report, filterMode, search]);
 
-  const handleExportCsv = async () => {
+  const handleCopyRegistered = async () => {
     if (!report) return;
-    const lines = [
-      "domain,fuzzer,registered,risk_level,a_records,mx_records,ns_records,risk_reason",
-      ...filtered.map((c) =>
-        [
-          c.domain,
-          c.fuzzer,
-          c.registered,
-          c.risk_level,
-          `"${c.a_records.join(";")}"`,
-          `"${c.mx_records.join(";")}"`,
-          `"${c.ns_records.join(";")}"`,
-          `"${c.risk_reason.replace(/"/g, '""')}"`,
-        ].join(","),
-      ),
-    ];
-    try {
-      const saved = await saveExport(
-        `${report.source_domain}-lookalikes.csv`,
-        "csv",
-        lines.join("\n") + "\n",
-      );
-      if (saved) onNotify(`Saved ${report.source_domain}-lookalikes.csv`);
-    } catch (err) {
-      onNotify(`Export failed: ${String(err)}`);
-    }
+    const reg = report.candidates.filter((c) => c.registered).map((c) => c.domain);
+    if (reg.length === 0) return;
+    await copyToClipboard(reg.join("\n"));
+    onNotify(`Copied ${reg.length} registered lookalike(s)`);
   };
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface p-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <ShieldAlert className="h-4 w-4 text-sky-600 dark:text-sky-400" />
-            <h3 className="text-xs font-semibold text-ink">
+        <div className="flex items-center gap-2.5">
+          <ShieldAlert className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+          <div>
+            <h3 className="text-sm font-semibold text-ink">
               Typosquatting &amp; Brand Lookalike Scanner
             </h3>
+            <p className="text-xs text-ink-muted">
+              Generates homoglyph, transposition, omission, TLD-swap, and phishing-lure variants and probes DNS for active web/MX impersonation risk.
+            </p>
           </div>
-          <p className="mt-1 text-[11px] text-ink-muted">
-            Generates up to 96 homoglyph, transposition, omission, TLD-swap, and
-            phishing-lure variants of{" "}
-            <span className="font-mono text-ink-secondary">{defaultDomain}</span>{" "}
-            and checks live DNS A, AAAA, MX, and NS records.
-          </p>
         </div>
-
         <button
           type="button"
           disabled={loading}
@@ -133,11 +95,11 @@ export function TyposquatPanel({
           className="inline-flex items-center gap-1.5 rounded-lg bg-sky-600 px-3.5 py-1.5 text-xs font-semibold text-white transition hover:bg-sky-500 disabled:opacity-50 dark:bg-sky-500 dark:text-slate-950"
         >
           {loading ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            <RefreshCw className="h-3.5 w-3.5 animate-spin" />
           ) : (
-            <Search className="h-3.5 w-3.5" />
+            <Play className="h-3.5 w-3.5" />
           )}
-          {loading ? "Scanning Lookalikes..." : "Scan Lookalikes"}
+          {loading ? "Scanning Variants..." : report ? "Re-scan Lookalikes" : "Scan Lookalikes"}
         </button>
       </div>
 
@@ -147,16 +109,22 @@ export function TyposquatPanel({
         </div>
       )}
 
+      {!report && !loading && !error && (
+        <div className="rounded-xl border border-dashed border-line bg-surface/60 px-6 py-12 text-center text-xs text-ink-muted">
+          Click <span className="font-semibold text-ink">Scan Lookalikes</span> to check up to 96 typosquatting &amp; phishing lookalike domains for <span className="font-mono text-ink">{domain}</span>.
+        </div>
+      )}
+
       {report && (
-        <div className="space-y-4">
+        <>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <div className="rounded-xl border border-line bg-surface p-3.5">
               <div className="text-[11px] text-ink-muted">Variants Checked</div>
               <div className="mt-1 font-mono text-xl font-bold text-ink">
                 {report.total_checked}
-                <span className="ml-1 text-xs font-normal text-ink-muted">
-                  / {report.total_generated}
-                </span>
+              </div>
+              <div className="text-[11px] text-ink-muted">
+                of {report.total_generated} generated ({report.latency_ms}ms)
               </div>
             </div>
             <div className="rounded-xl border border-line bg-surface p-3.5">
@@ -166,9 +134,7 @@ export function TyposquatPanel({
               </div>
             </div>
             <div className="rounded-xl border border-line bg-surface p-3.5">
-              <div className="text-[11px] text-ink-muted">
-                High Risk (Active MX)
-              </div>
+              <div className="text-[11px] text-ink-muted">High Risk (Active MX)</div>
               <div
                 className={`mt-1 font-mono text-xl font-bold ${
                   report.high_risk_count > 0
@@ -187,8 +153,8 @@ export function TyposquatPanel({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line bg-surface px-4 py-2.5">
-            <div className="flex flex-wrap items-center gap-1.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-line bg-surface p-3">
+            <div className="flex flex-wrap gap-1.5">
               {(
                 [
                   ["registered", `Registered (${report.registered_count})`],
@@ -200,11 +166,11 @@ export function TyposquatPanel({
                 <button
                   key={id}
                   type="button"
-                  onClick={() => setFilter(id)}
-                  className={`rounded-lg px-2.5 py-1 text-[11px] font-medium transition ${
-                    filter === id
-                      ? "bg-sky-500/15 text-sky-700 ring-1 ring-sky-500/30 dark:text-sky-300"
-                      : "text-ink-muted hover:bg-surface-alt hover:text-ink"
+                  onClick={() => setFilterMode(id)}
+                  className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
+                    filterMode === id
+                      ? "border-sky-500/60 bg-sky-500/15 text-sky-700 dark:text-sky-300"
+                      : "border-line bg-canvas text-ink-muted hover:text-ink"
                   }`}
                 >
                   {label}
@@ -212,158 +178,121 @@ export function TyposquatPanel({
               ))}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={fuzzerFilter}
-                onChange={(e) => setFuzzerFilter(e.target.value)}
-                className="rounded-lg border border-line bg-canvas px-2 py-1 text-[11px] text-ink outline-none focus:border-sky-500"
-              >
-                <option value="all">All fuzzers</option>
-                {fuzzers.map((f) => (
-                  <option key={f} value={f}>
-                    {f}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="text"
-                value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                placeholder="Filter domain..."
-                className="w-40 rounded-lg border border-line bg-canvas px-2.5 py-1 font-mono text-[11px] text-ink outline-none focus:border-sky-500"
-              />
+            <div className="flex items-center gap-2">
+              <div className="relative w-56">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-muted" />
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Filter domains..."
+                  className="w-full rounded-lg border border-line-strong bg-canvas py-1.5 pl-8 pr-3 text-xs text-ink placeholder:text-ink-muted/70 focus:border-sky-500 focus:outline-none"
+                />
+              </div>
               <button
                 type="button"
-                onClick={() => void handleExportCsv()}
-                className="inline-flex items-center gap-1 rounded-lg border border-line bg-surface-alt px-2.5 py-1 text-[11px] font-medium text-ink-secondary hover:text-ink"
+                disabled={report.registered_count === 0}
+                onClick={() => void handleCopyRegistered()}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface-alt px-3 py-1.5 text-xs font-medium text-ink-secondary hover:text-ink disabled:opacity-40"
               >
-                <Download className="h-3 w-3" />
-                CSV
+                <Copy className="h-3.5 w-3.5" />
+                Copy Registered
               </button>
             </div>
           </div>
 
           <div className="overflow-hidden rounded-xl border border-line bg-surface">
             {filtered.length === 0 ? (
-              <div className="px-4 py-8 text-center text-xs text-ink-muted">
-                No lookalike domains match the current filter.
+              <div className="px-6 py-10 text-center text-xs text-ink-muted">
+                <ShieldCheck className="mx-auto mb-2 h-6 w-6 text-emerald-500/70" />
+                No lookalike domains matched this filter.
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full border-collapse text-left text-xs">
                   <thead>
-                    <tr className="border-b border-line bg-canvas/70 text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
-                      <th className="px-4 py-2.5">Variant Domain</th>
+                    <tr className="border-b border-line bg-surface-alt text-[11px] font-semibold uppercase tracking-wider text-ink-muted">
+                      <th className="px-4 py-2.5">Candidate Domain</th>
                       <th className="px-4 py-2.5">Technique</th>
                       <th className="px-4 py-2.5">Risk</th>
-                      <th className="px-4 py-2.5">Web / Mail Records</th>
-                      <th className="px-4 py-2.5 text-right">Actions</th>
+                      <th className="px-4 py-2.5">DNS Footprint</th>
+                      <th className="px-4 py-2.5 text-right">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-line">
-                    {filtered.map((item) => {
-                      const riskBadge =
-                        item.risk_level === "high" ? (
-                          <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 text-[11px] font-semibold text-rose-700 dark:text-rose-300">
-                            <Mail className="h-3 w-3" />
-                            High (Active MX)
-                          </span>
-                        ) : item.risk_level === "medium" ? (
-                          <span className="inline-flex items-center gap-1 rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                    {filtered.map((c) => {
+                      const badge =
+                        c.risk_level === "high" ? (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700 dark:text-rose-300">
                             <AlertTriangle className="h-3 w-3" />
-                            Medium (Web IP)
+                            High
                           </span>
-                        ) : item.risk_level === "low" ? (
-                          <span className="inline-flex items-center gap-1 rounded-full border border-sky-500/40 bg-sky-500/15 px-2 py-0.5 text-[11px] font-medium text-sky-700 dark:text-sky-300">
-                            Low (NS Only)
+                        ) : c.risk_level === "medium" ? (
+                          <span className="rounded-full border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:text-amber-300">
+                            Medium
+                          </span>
+                        ) : c.risk_level === "low" ? (
+                          <span className="rounded-full border border-sky-500/40 bg-sky-500/15 px-2 py-0.5 text-[10px] font-bold uppercase text-sky-700 dark:text-sky-300">
+                            Low
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 rounded-full border border-line bg-surface-alt px-2 py-0.5 text-[11px] text-ink-muted">
-                            <ShieldCheck className="h-3 w-3" />
-                            Unregistered
+                          <span className="rounded-full border border-line bg-surface-alt px-2 py-0.5 text-[10px] text-ink-muted">
+                            Available
                           </span>
                         );
 
                       return (
                         <tr
-                          key={item.domain}
+                          key={c.domain}
                           className={
-                            item.risk_level === "high"
-                              ? "bg-rose-500/[0.04]"
+                            c.risk_level === "high"
+                              ? "bg-rose-500/[0.06]"
                               : "hover:bg-surface-alt/70"
                           }
                         >
-                          <td className="px-4 py-2.5 align-top font-mono font-medium text-ink">
-                            {item.domain}
+                          <td className="px-4 py-2.5 align-top">
+                            <div className="font-mono font-semibold text-ink">
+                              {c.domain}
+                            </div>
+                            <div className="text-[11px] text-ink-muted">
+                              {c.risk_reason}
+                            </div>
                           </td>
-                          <td className="px-4 py-2.5 align-top text-ink-secondary">
-                            <span className="rounded border border-line bg-canvas px-1.5 py-0.5 text-[11px]">
-                              {item.fuzzer}
+                          <td className="whitespace-nowrap px-4 py-2.5 align-top">
+                            <span className="rounded border border-line bg-canvas px-2 py-0.5 text-[11px] text-ink-secondary">
+                              {c.fuzzer}
                             </span>
                           </td>
                           <td className="whitespace-nowrap px-4 py-2.5 align-top">
-                            {riskBadge}
+                            {badge}
                           </td>
-                          <td className="px-4 py-2.5 align-top text-[11px] text-ink-secondary">
-                            {item.mx_records.length > 0 && (
-                              <div className="font-mono text-rose-700 dark:text-rose-300">
-                                MX: {item.mx_records.slice(0, 2).join(", ")}
+                          <td className="px-4 py-2.5 align-top font-mono text-[11px]">
+                            {c.a_records.length > 0 && (
+                              <div className="text-ink">A: {c.a_records.join(", ")}</div>
+                            )}
+                            {c.mx_records.length > 0 && (
+                              <div className="text-rose-700 dark:text-rose-300">
+                                MX: {c.mx_records.join(", ")}
                               </div>
                             )}
-                            {(item.a_records.length > 0 ||
-                              item.aaaa_records.length > 0) && (
-                              <div className="font-mono text-ink-secondary">
-                                IP:{" "}
-                                {[...item.a_records, ...item.aaaa_records]
-                                  .slice(0, 3)
-                                  .join(", ")}
+                            {c.ns_records.length > 0 && (
+                              <div className="text-ink-muted">
+                                NS: {c.ns_records.slice(0, 2).join(", ")}
                               </div>
                             )}
-                            {item.ns_records.length > 0 && (
-                              <div className="font-mono text-ink-muted">
-                                NS: {item.ns_records.slice(0, 2).join(", ")}
-                              </div>
-                            )}
-                            {!item.registered && (
-                              <span className="text-ink-muted">NXDOMAIN</span>
-                            )}
+                            {!c.registered && <span className="text-ink-muted">—</span>}
                           </td>
                           <td className="whitespace-nowrap px-4 py-2.5 text-right align-top">
-                            <div className="inline-flex items-center gap-1">
+                            {c.registered && (
                               <button
                                 type="button"
-                                onClick={async () => {
-                                  await copyToClipboard(item.domain);
-                                  setCopiedDomain(item.domain);
-                                  onNotify(`Copied ${item.domain}`);
-                                  setTimeout(
-                                    () =>
-                                      setCopiedDomain((p) =>
-                                        p === item.domain ? null : p,
-                                      ),
-                                    1400,
-                                  );
-                                }}
-                                title="Copy domain"
-                                className="rounded p-1 text-ink-muted hover:bg-surface-alt hover:text-ink"
+                                onClick={() => onInspectDomain(c.domain)}
+                                className="inline-flex items-center gap-1 rounded-md border border-line-strong bg-surface-alt px-2 py-1 text-[11px] text-ink-secondary hover:border-sky-500/50 hover:text-sky-600 dark:hover:text-sky-300"
                               >
-                                {copiedDomain === item.domain ? (
-                                  <Check className="h-3.5 w-3.5 text-emerald-500" />
-                                ) : (
-                                  <Copy className="h-3.5 w-3.5" />
-                                )}
+                                Inspect
+                                <ArrowUpRight className="h-3 w-3" />
                               </button>
-                              {item.registered && (
-                                <button
-                                  type="button"
-                                  onClick={() => onInspectDomain(item.domain)}
-                                  className="inline-flex items-center gap-1 rounded border border-line bg-surface-alt px-2 py-0.5 text-[11px] font-medium text-ink-secondary hover:border-sky-500/40 hover:text-ink"
-                                >
-                                  Inspect
-                                  <ArrowUpRight className="h-3 w-3" />
-                                </button>
-                              )}
-                            </div>
+                            )}
                           </td>
                         </tr>
                       );
@@ -373,7 +302,7 @@ export function TyposquatPanel({
               </div>
             )}
           </div>
-        </div>
+        </>
       )}
     </div>
   );

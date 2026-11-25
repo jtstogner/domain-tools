@@ -1,4 +1,5 @@
 import {
+  AlertTriangle,
   ArrowUpRight,
   Check,
   CheckCircle2,
@@ -6,12 +7,13 @@ import {
   Info,
   Network,
   Search,
+  ShieldAlert,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { SubdomainDiscoveryReport } from "../types/dns";
 import { copyToClipboard } from "../lib/api";
 
-type FilterMode = "all" | "live" | "ct_only";
+type FilterMode = "all" | "live" | "ct_only" | "takeover";
 
 interface SubdomainsPanelProps {
   report: SubdomainDiscoveryReport;
@@ -29,11 +31,16 @@ export function SubdomainsPanel({
   const [copiedSub, setCopiedSub] = useState<string | null>(null);
   const [copiedAll, setCopiedAll] = useState(false);
 
+  const takeoverCount =
+    report.takeover_count ??
+    report.subdomains.filter((s) => Boolean(s.takeover_risk)).length;
+
   const filtered = useMemo(() => {
     const needle = searchText.trim().toLowerCase();
     return report.subdomains.filter((item) => {
       if (filterMode === "live" && !item.live) return false;
       if (filterMode === "ct_only" && item.live) return false;
+      if (filterMode === "takeover" && !item.takeover_risk) return false;
       if (needle) {
         const hitSub = item.subdomain.toLowerCase().includes(needle);
         const hitTarget =
@@ -64,7 +71,7 @@ export function SubdomainsPanel({
   return (
     <div className="space-y-4">
       {/* Top Summary Cards */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <div className="rounded-xl border border-line bg-surface p-4">
           <div className="text-[11px] font-medium uppercase tracking-wider text-ink-muted">
             Total Discovered
@@ -103,6 +110,24 @@ export function SubdomainsPanel({
 
         <div className="rounded-xl border border-line bg-surface p-4">
           <div className="text-[11px] font-medium uppercase tracking-wider text-ink-muted">
+            Takeover Risks
+          </div>
+          <div
+            className={`mt-1.5 font-mono text-2xl font-bold ${
+              takeoverCount > 0
+                ? "text-rose-700 dark:text-rose-300"
+                : "text-emerald-700 dark:text-emerald-300"
+            }`}
+          >
+            {takeoverCount}
+          </div>
+          <div className="mt-1 text-[11px] text-ink-muted">
+            Dangling CNAME / unclaimed cloud
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-line bg-surface p-4">
+          <div className="text-[11px] font-medium uppercase tracking-wider text-ink-muted">
             Discovery Sources
           </div>
           <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
@@ -129,6 +154,18 @@ export function SubdomainsPanel({
           </div>
         </div>
       </div>
+
+      {takeoverCount > 0 && (
+        <div className="flex items-start gap-3 rounded-xl border border-rose-500/40 bg-rose-500/10 p-3.5 text-xs text-rose-900 dark:text-rose-200">
+          <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose-600 dark:text-rose-400" />
+          <div>
+            <span className="font-semibold">
+              {takeoverCount} Subdomain Takeover Risk(s) Detected:
+            </span>{" "}
+            One or more subdomains delegate via CNAME to an unclaimed cloud service or NXDOMAIN target. Remove the dangling CNAME record or reclaim the target resource immediately.
+          </div>
+        </div>
+      )}
 
       {report.wildcard_detected && (
         <div className="flex items-start gap-3 rounded-xl border border-sky-500/30 bg-sky-500/10 p-3.5 text-xs text-sky-900 dark:text-sky-200">
@@ -185,6 +222,17 @@ export function SubdomainsPanel({
           >
             Passive-Only ({report.ct_only_count})
           </button>
+          <button
+            type="button"
+            onClick={() => setFilterMode("takeover")}
+            className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
+              filterMode === "takeover"
+                ? "border-rose-500/60 bg-rose-500/15 text-rose-700 dark:text-rose-300"
+                : "border-line bg-canvas text-ink-muted hover:text-ink"
+            }`}
+          >
+            Takeover Risk ({takeoverCount})
+          </button>
         </div>
 
         <div className="flex w-full items-center gap-2 sm:w-auto">
@@ -240,7 +288,14 @@ export function SubdomainsPanel({
               </thead>
               <tbody className="divide-y divide-line">
                 {filtered.map((item) => (
-                  <tr key={item.subdomain} className="hover:bg-surface-alt/70">
+                  <tr
+                    key={item.subdomain}
+                    className={
+                      item.takeover_risk
+                        ? "bg-rose-500/[0.06]"
+                        : "hover:bg-surface-alt/70"
+                    }
+                  >
                     <td className="px-4 py-2.5 align-top">
                       <button
                         type="button"
@@ -250,9 +305,26 @@ export function SubdomainsPanel({
                       >
                         {item.subdomain}
                       </button>
+                      {item.takeover_risk && (
+                        <div className="mt-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 p-2 text-[11px] text-rose-900 dark:text-rose-200">
+                          <div className="flex items-center gap-1.5 font-semibold">
+                            <AlertTriangle className="h-3.5 w-3.5 text-rose-600 dark:text-rose-400" />
+                            Takeover Risk ({item.takeover_risk.provider} · {item.takeover_risk.confidence})
+                          </div>
+                          <div className="mt-0.5">{item.takeover_risk.evidence}</div>
+                          <div className="mt-0.5 text-ink-secondary">
+                            Fix: {item.takeover_risk.remediation}
+                          </div>
+                        </div>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-2.5 align-top">
-                      {item.live ? (
+                      {item.takeover_risk ? (
+                        <span className="inline-flex items-center gap-1 rounded-full border border-rose-500/40 bg-rose-500/15 px-2 py-0.5 text-[11px] font-medium text-rose-700 dark:text-rose-300">
+                          <AlertTriangle className="h-3 w-3" />
+                          Takeover Risk
+                        </span>
+                      ) : item.live ? (
                         <span className="inline-flex items-center gap-1 rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-300">
                           <CheckCircle2 className="h-3 w-3" />
                           Live

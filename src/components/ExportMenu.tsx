@@ -50,11 +50,11 @@ export function ExportMenu({
         ? formatAsJson(report)
         : ext === "csv"
           ? formatAsCsv(report)
-          : ext === "md"
-            ? formatAsAuditMarkdown(report)
-            : ext === "html"
-              ? formatAsAuditHtml(report)
-              : formatAsZoneFile(report, selectedResolverId);
+          : ext === "zone"
+            ? formatAsZoneFile(report, selectedResolverId)
+            : ext === "md"
+              ? formatAsAuditMarkdown(report)
+              : formatAsAuditHtml(report);
 
     const filename =
       ext === "md"
@@ -86,7 +86,7 @@ export function ExportMenu({
       kind === "zone"
         ? "Copied zone output"
         : kind === "md"
-          ? "Copied Markdown audit report"
+          ? "Copied Markdown audit"
           : "Copied JSON report",
     );
   };
@@ -104,14 +104,14 @@ export function ExportMenu({
       </button>
 
       {open && (
-        <div className="absolute right-0 z-30 mt-1.5 w-60 overflow-hidden rounded-xl border border-line-strong bg-surface py-1 shadow-xl shadow-slate-900/10 dark:shadow-black/50">
+        <div className="absolute right-0 z-30 mt-1.5 w-56 overflow-hidden rounded-xl border border-line-strong bg-surface py-1 shadow-xl shadow-slate-900/10 dark:shadow-black/50">
           <button
             type="button"
             onClick={() => handleSave("md")}
             className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
           >
             <FileText className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
-            Save Audit Report (.md)
+            Audit Report (.md)
           </button>
           <button
             type="button"
@@ -119,7 +119,7 @@ export function ExportMenu({
             className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
           >
             <Globe className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
-            Save Audit Report (.html)
+            Audit Report (.html)
           </button>
           <div className="my-1 border-t border-line" />
           <button
@@ -153,7 +153,7 @@ export function ExportMenu({
             className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-xs text-ink-secondary hover:bg-surface-alt hover:text-ink"
           >
             <Copy className="h-3.5 w-3.5 text-ink-muted" />
-            Copy Audit Report (MD)
+            Copy Markdown Audit
           </button>
           <button
             type="button"
