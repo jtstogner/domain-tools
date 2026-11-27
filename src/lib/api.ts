@@ -6,6 +6,7 @@ import type {
   DnsOnlyResult,
   DnsQueryReport,
   DnsTraceReport,
+  IpDeepScanReport,
   MonitorProbeRequest,
   MonitorProbeResult,
   PemDecodeReport,
@@ -138,6 +139,16 @@ export async function fetchRobotsTxt(domain: string): Promise<RobotsFetchResult>
 
 export async function decodePem(pemText: string): Promise<PemDecodeReport> {
   return invoke<PemDecodeReport>("decode_pem", { pemText });
+}
+
+export async function deepScanIp(
+  target: string,
+  customPorts?: number[],
+): Promise<IpDeepScanReport> {
+  return invoke<IpDeepScanReport>("deep_scan_ip", {
+    target,
+    customPorts: customPorts && customPorts.length > 0 ? customPorts : null,
+  });
 }
 
 export async function saveExport(

@@ -7,6 +7,7 @@ import {
   Globe2,
   KeyRound,
   MailSearch,
+  Radar,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -19,6 +20,7 @@ import { parseEmailHeaders } from "../../lib/emailHeaders";
 export interface EmailHeaderAnalyzerTabProps {
   onInspectDomain: (domain: string, options?: { dkimSelectors?: string }) => void;
   onCheckDnsbl: (target: string) => void;
+  onDeepScanIp?: (ip: string) => void;
   onNotify: (msg: string) => void;
 }
 
@@ -60,6 +62,7 @@ function formatDelay(sec: number | null): string {
 export function EmailHeaderAnalyzerTab({
   onInspectDomain,
   onCheckDnsbl,
+  onDeepScanIp,
   onNotify,
 }: EmailHeaderAnalyzerTabProps) {
   const [rawHeaders, setRawHeaders] = useState("");
@@ -182,14 +185,26 @@ export function EmailHeaderAnalyzerTab({
                 {parsed.originatingIp ?? "Not detected"}
               </div>
               {parsed.originatingIp && (
-                <button
-                  type="button"
-                  onClick={() => onCheckDnsbl(parsed.originatingIp!)}
-                  className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-sky-600 hover:underline dark:text-sky-400"
-                >
-                  <ShieldAlert className="h-3 w-3" />
-                  Check IP in DNSBL
-                </button>
+                <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => onCheckDnsbl(parsed.originatingIp!)}
+                    className="inline-flex items-center gap-1 text-[11px] text-sky-600 hover:underline dark:text-sky-400"
+                  >
+                    <ShieldAlert className="h-3 w-3" />
+                    DNSBL
+                  </button>
+                  {onDeepScanIp && (
+                    <button
+                      type="button"
+                      onClick={() => onDeepScanIp(parsed.originatingIp!)}
+                      className="inline-flex items-center gap-1 text-[11px] text-sky-600 hover:underline dark:text-sky-400"
+                    >
+                      <Radar className="h-3 w-3" />
+                      Deep Scan
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
@@ -405,6 +420,16 @@ export function EmailHeaderAnalyzerTab({
                                   className="rounded border border-line bg-surface-alt px-1.5 py-0.5 text-[10px] text-sky-700 hover:border-sky-500/40 dark:text-sky-300"
                                 >
                                   DNSBL
+                                </button>
+                              )}
+                              {onDeepScanIp && (
+                                <button
+                                  type="button"
+                                  onClick={() => onDeepScanIp(hop.ip!)}
+                                  title="Deep Scan this IP"
+                                  className="rounded border border-line bg-surface-alt px-1.5 py-0.5 text-[10px] text-sky-700 hover:border-sky-500/40 dark:text-sky-300"
+                                >
+                                  Scan
                                 </button>
                               )}
                             </div>

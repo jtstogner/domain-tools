@@ -1,7 +1,9 @@
 import {
   Activity,
   AlertCircle,
+  AlertTriangle,
   ArrowRight,
+  Bell,
   Bookmark,
   Clock,
   Copy,
@@ -19,6 +21,7 @@ import {
   Moon,
   Network,
   Plug,
+  Radar,
   Radio,
   RefreshCw,
   Route,
@@ -39,6 +42,7 @@ import { DnsTracePanel } from "./components/DnsTracePanel";
 import { DomainHealthPanel } from "./components/DomainHealthPanel";
 import { ExportMenu } from "./components/ExportMenu";
 import { HistorySidebar } from "./components/HistorySidebar";
+import { IpDeepScanPanel } from "./components/IpDeepScanPanel";
 import { LiveMonitorPanel } from "./components/LiveMonitorPanel";
 import { NetworkPanel } from "./components/NetworkPanel";
 import { PortsPanel } from "./components/PortsPanel";
@@ -59,7 +63,12 @@ import { UtilitiesPanel } from "./components/UtilitiesPanel";
 import { WatchlistPanel } from "./components/WatchlistPanel";
 import { WebsitePanel } from "./components/WebsitePanel";
 import { WhoisPanel } from "./components/WhoisPanel";
-import { copyToClipboard, queryDomain, recheckSecurity } from "./lib/api";
+import {
+  copyToClipboard,
+  queryDomain,
+  recheckSecurity,
+  runBulkCheck,
+} from "./lib/api";
 import {
   buildOptionsKey,
   type CachedSubResults,
@@ -83,12 +92,27 @@ import { formatAsZoneFile } from "./lib/export";
 import { type ThemePreference, useTheme } from "./lib/theme";
 import {
   computeDrifts,
+  driftKey,
+  findNewDrifts,
+  isEntryDueForCheck,
   loadWatchlist,
+  loadWatchlistAlerts,
+  loadWatchlistSettings,
+  normalizeWatchDomain,
+  playAlertChime,
   saveWatchlist,
+  saveWatchlistAlerts,
+  saveWatchlistSettings,
+  sendDesktopNotification,
+  snapshotFromBulk,
   snapshotFromReport,
+  type WatchlistAlertEvent,
   type WatchlistEntry,
+  type WatchlistSettings,
+  type WatchlistSnapshot,
 } from "./lib/watchlist";
 import type {
+  BulkDomainResult,
   DnsQueryReport,
   HistoryEntry,
   QueryProgressEvent,
@@ -96,7 +120,13 @@ import type {
   ResolverId,
 } from "./types/dns";
 
-type WorkspaceMode = "inspector" | "watchlist" | "bulk" | "monitor" | "utilities";
+type WorkspaceMode =
+  | "inspector"
+  | "ip-scan"
+  | "watchlist"
+  | "bulk"
+  | "monitor"
+  | "utilities";
 
 type ActiveTab =
   | "records"
@@ -155,6 +185,45 @@ function normalizeDomainForCache(raw: string): string {
     .replace(/\.$/, "");
 }
 
+function isValidIpv4Literal(candidate: string): boolean {
+  const parts = candidate.split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((p) => {
+    if (!/^\d{1,3}$/.test(p)) return false;
+    const n = Number(p);
+    return n >= 0 && n <= 255;
+  });
+}
+
+function isValidIpv6Literal(candidate: string): boolean {
+  if (!candidate.includes(":")) return false;
+  // Quick syntactic check + URL host parser validation for IPv6
+  if (!/^[0-9a-fA-F:]+$/.test(candidate)) return false;
+  try {
+    new URL(`http://[${candidate}]/`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function extractLiteralIp(raw: string): string | null {
+  let s = raw.trim();
+  if (!s) return null;
+  s = s.replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  if (s.startsWith("[")) {
+    const end = s.indexOf("]");
+    if (end !== -1) {
+      const inner = s.slice(1, end);
+      if (isValidIpv6Literal(inner)) return inner;
+    }
+  }
+  if (isValidIpv6Literal(s)) return s;
+  const withoutPort = s.replace(/:\d+$/, "");
+  if (isValidIpv4Literal(withoutPort)) return withoutPort;
+  return null;
+}
+
 export function App() {
   const { preference, setPreference } = useTheme();
   const [workspace, setWorkspace] = useState<WorkspaceMode>("inspector");
@@ -196,8 +265,37 @@ export function App() {
   const [activeSubResults, setActiveSubResults] = useState<CachedSubResults>({});
   const [reportChanges, setReportChanges] = useState<ReportChangeItem[]>([]);
   const [, setAgeTick] = useState(0);
+  const [ipScanTarget, setIpScanTarget] = useState<string>("");
+  const [ipScanNonce, setIpScanNonce] = useState(0);
+
+  // Watchlist periodic monitoring & alerts
+  const [watchlistSettings, setWatchlistSettings] = useState<WatchlistSettings>(
+    loadWatchlistSettings,
+  );
+  const [watchlistAlerts, setWatchlistAlerts] = useState<WatchlistAlertEvent[]>(
+    loadWatchlistAlerts,
+  );
+  const [watchlistChecking, setWatchlistChecking] = useState(false);
+  const [watchlistCheckingDomains, setWatchlistCheckingDomains] = useState<
+    string[]
+  >([]);
+  const [alertMenuOpen, setAlertMenuOpen] = useState(false);
+  const [activeAlertBanner, setActiveAlertBanner] =
+    useState<WatchlistAlertEvent | null>(null);
 
   const domainInputRef = useRef<HTMLInputElement>(null);
+  const alertMenuRef = useRef<HTMLDivElement>(null);
+  const watchlistRef = useRef<WatchlistEntry[]>(watchlist);
+  const watchlistSettingsRef = useRef<WatchlistSettings>(watchlistSettings);
+  const watchlistInFlightRef = useRef(false);
+
+  useEffect(() => {
+    watchlistRef.current = watchlist;
+  }, [watchlist]);
+
+  useEffect(() => {
+    watchlistSettingsRef.current = watchlistSettings;
+  }, [watchlistSettings]);
 
   const refreshCacheIndex = useCallback(() => {
     setCachedDomainsMap(listCachedDomains());
@@ -248,41 +346,331 @@ export function App() {
     }, 2400);
   }, []);
 
+  const handleDeepScanIp = useCallback((ip: string) => {
+    const clean = ip.trim();
+    if (!clean) return;
+    setIpScanTarget(clean);
+    setIpScanNonce((n) => n + 1);
+    setWorkspace("ip-scan");
+  }, []);
+
   const updateWatchlist = useCallback((next: WatchlistEntry[]) => {
+    watchlistRef.current = next;
     setWatchlist(next);
     saveWatchlist(next);
   }, []);
+
+  const updateWatchlistSettings = useCallback((next: WatchlistSettings) => {
+    watchlistSettingsRef.current = next;
+    setWatchlistSettings(next);
+    saveWatchlistSettings(next);
+  }, []);
+
+  const updateWatchlistAlerts = useCallback(
+    (updater: (prev: WatchlistAlertEvent[]) => WatchlistAlertEvent[]) => {
+      setWatchlistAlerts((prev) => {
+        const next = updater(prev).slice(0, 100);
+        saveWatchlistAlerts(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const watchedDomainsSet = useMemo(
+    () => new Set(watchlist.map((w) => w.domain.toLowerCase())),
+    [watchlist],
+  );
 
   const watchlistAlertsCount = useMemo(
     () => watchlist.reduce((acc, item) => acc + item.drifts.length, 0),
     [watchlist],
   );
 
+  const unreadAlertsCount = useMemo(
+    () => watchlistAlerts.filter((a) => !a.read).length,
+    [watchlistAlerts],
+  );
+
+  useEffect(() => {
+    document.title =
+      unreadAlertsCount > 0
+        ? `(${unreadAlertsCount}) Domain Tools`
+        : "Domain Tools";
+  }, [unreadAlertsCount]);
+
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (
+        alertMenuRef.current &&
+        !alertMenuRef.current.contains(e.target as Node)
+      ) {
+        setAlertMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
   const isCurrentWatched = useMemo(
     () => Boolean(report && watchlist.some((w) => w.domain === report.domain)),
     [report, watchlist],
   );
 
+  const runWatchlistCheck = useCallback(
+    async (targetDomains: string[], source: "auto" | "manual") => {
+      const cleanTargets = Array.from(
+        new Set(targetDomains.map(normalizeWatchDomain).filter(Boolean)),
+      );
+      if (cleanTargets.length === 0 || watchlistInFlightRef.current) return;
+
+      watchlistInFlightRef.current = true;
+      setWatchlistChecking(true);
+      setWatchlistCheckingDomains(cleanTargets);
+
+      try {
+        const results = await runBulkCheck(cleanTargets);
+        const byDomain = new Map(results.map((r) => [r.domain.toLowerCase(), r]));
+        const nowIso = new Date().toISOString();
+        const generatedEvents: WatchlistAlertEvent[] = [];
+        let totalDrifts = 0;
+
+        const updated = watchlistRef.current.map((entry) => {
+          const res = byDomain.get(entry.domain.toLowerCase());
+          if (!res) return entry;
+          const snap = snapshotFromBulk(res);
+          const baseline = entry.baseline ?? snap;
+          const drifts = computeDrifts(baseline, snap);
+          totalDrifts += drifts.length;
+
+          const newDrifts = findNewDrifts(drifts, entry.lastNotifiedDriftKeys);
+          if (newDrifts.length > 0) {
+            generatedEvents.push({
+              id: `${entry.domain}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              domain: entry.domain,
+              detectedAt: nowIso,
+              read: false,
+              source,
+              drifts: newDrifts,
+            });
+          }
+
+          return {
+            ...entry,
+            baseline,
+            latest: snap,
+            drifts,
+            lastCheckedAt: nowIso,
+            lastNotifiedDriftKeys: drifts.map(driftKey),
+          };
+        });
+
+        updateWatchlist(updated);
+
+        if (generatedEvents.length > 0) {
+          updateWatchlistAlerts((prev) => [...generatedEvents, ...prev]);
+          setActiveAlertBanner(generatedEvents[0]);
+
+          const curSettings = watchlistSettingsRef.current;
+          if (curSettings.soundAlerts) {
+            playAlertChime();
+          }
+
+          const totalNewDrifts = generatedEvents.reduce(
+            (acc, ev) => acc + ev.drifts.length,
+            0,
+          );
+          const first = generatedEvents[0];
+          const firstMsg = first.drifts[0]?.message ?? "Configuration drift";
+          const summaryBody =
+            generatedEvents.length === 1
+              ? `${first.domain}: ${firstMsg}`
+              : `${generatedEvents.length} watched domains changed (${totalNewDrifts} new alert(s))`;
+
+          if (curSettings.desktopNotifications) {
+            sendDesktopNotification(
+              "Domain Tools Watchlist Alert",
+              summaryBody,
+              () => {
+                setWorkspace("watchlist");
+              },
+            );
+          }
+
+          notify(`Watchlist alert: ${summaryBody}`);
+        } else if (source === "manual") {
+          if (totalDrifts > 0) {
+            notify(
+              `Checked ${results.length} domain(s) — ${totalDrifts} existing drift alert(s)`,
+            );
+          } else {
+            notify(`Checked ${results.length} watched domain(s) — all clean`);
+          }
+        }
+      } catch (err) {
+        if (source === "manual") {
+          notify(`Watchlist check failed: ${String(err)}`);
+        }
+      } finally {
+        watchlistInFlightRef.current = false;
+        setWatchlistChecking(false);
+        setWatchlistCheckingDomains([]);
+      }
+    },
+    [notify, updateWatchlist, updateWatchlistAlerts],
+  );
+
+  // Periodic background scheduler (15s tick checks due entries)
+  useEffect(() => {
+    const tick = () => {
+      const cfg = watchlistSettingsRef.current;
+      if (!cfg.autoCheckEnabled || watchlistInFlightRef.current) return;
+      const nowMs = Date.now();
+      const dueDomains = watchlistRef.current
+        .filter((entry) => isEntryDueForCheck(entry, cfg, nowMs))
+        .map((entry) => entry.domain);
+      if (dueDomains.length > 0) {
+        void runWatchlistCheck(dueDomains, "auto");
+      }
+    };
+
+    const startupTimer = window.setTimeout(() => {
+      if (watchlistSettingsRef.current.checkOnStartup) {
+        tick();
+      }
+    }, 3000);
+
+    const intervalId = window.setInterval(tick, 15000);
+    return () => {
+      window.clearTimeout(startupTimer);
+      window.clearInterval(intervalId);
+    };
+  }, [runWatchlistCheck]);
+
+  const addDomainsToWatchlist = useCallback(
+    (
+      rawDomains: string[],
+      opts?: {
+        initialSnapshots?: Map<string, WatchlistSnapshot>;
+        autoCheckNew?: boolean;
+      },
+    ) => {
+      const existing = new Set(
+        watchlistRef.current.map((w) => w.domain.toLowerCase()),
+      );
+      const nowIso = new Date().toISOString();
+      const addedEntries: WatchlistEntry[] = [];
+      const needBaselineDomains: string[] = [];
+
+      for (const raw of rawDomains) {
+        const clean = normalizeWatchDomain(raw);
+        if (!clean || !clean.includes(".") || existing.has(clean)) continue;
+        existing.add(clean);
+        const snap = opts?.initialSnapshots?.get(clean) ?? null;
+        const drifts = snap ? computeDrifts(snap, snap) : [];
+        addedEntries.push({
+          domain: clean,
+          addedAt: nowIso,
+          baseline: snap,
+          latest: snap,
+          lastCheckedAt: snap ? nowIso : null,
+          lastNotifiedDriftKeys: drifts.map(driftKey),
+          drifts,
+        });
+        if (!snap) {
+          needBaselineDomains.push(clean);
+        }
+      }
+
+      if (addedEntries.length === 0) {
+        notify("All selected domains are already in Watchlist");
+        return;
+      }
+
+      updateWatchlist([...addedEntries, ...watchlistRef.current]);
+      notify(
+        addedEntries.length === 1
+          ? `Added ${addedEntries[0].domain} to Watchlist`
+          : `Added ${addedEntries.length} domains to Watchlist`,
+      );
+
+      if (opts?.autoCheckNew !== false && needBaselineDomains.length > 0) {
+        void runWatchlistCheck(needBaselineDomains, "manual");
+      }
+    },
+    [notify, runWatchlistCheck, updateWatchlist],
+  );
+
+  const toggleWatchDomain = useCallback(
+    (rawDomain: string) => {
+      const clean = normalizeWatchDomain(rawDomain);
+      if (!clean) return;
+      const exists = watchlistRef.current.some(
+        (w) => w.domain.toLowerCase() === clean,
+      );
+      if (exists) {
+        updateWatchlist(
+          watchlistRef.current.filter((w) => w.domain.toLowerCase() !== clean),
+        );
+        notify(`Removed ${clean} from Watchlist`);
+        return;
+      }
+
+      const snapshots = new Map<string, WatchlistSnapshot>();
+      if (report && normalizeWatchDomain(report.domain) === clean) {
+        snapshots.set(clean, snapshotFromReport(report));
+      } else {
+        const cached = getCachedDomain(clean);
+        if (cached) {
+          snapshots.set(clean, snapshotFromReport(cached.report));
+        }
+      }
+      addDomainsToWatchlist([clean], { initialSnapshots: snapshots });
+    },
+    [addDomainsToWatchlist, notify, report, updateWatchlist],
+  );
+
+  const handleSaveBulkToWatchlist = useCallback(
+    (items: BulkDomainResult[]) => {
+      if (items.length === 0) return;
+      const snapshots = new Map<string, WatchlistSnapshot>();
+      const domains: string[] = [];
+      for (const item of items) {
+        const clean = normalizeWatchDomain(item.domain);
+        if (!clean) continue;
+        domains.push(clean);
+        snapshots.set(clean, snapshotFromBulk(item));
+      }
+      addDomainsToWatchlist(domains, {
+        initialSnapshots: snapshots,
+        autoCheckNew: false,
+      });
+    },
+    [addDomainsToWatchlist],
+  );
+
   const toggleWatchCurrent = useCallback(() => {
     if (!report) return;
-    const exists = watchlist.some((w) => w.domain === report.domain);
-    if (exists) {
-      updateWatchlist(watchlist.filter((w) => w.domain !== report.domain));
-      notify(`Removed ${report.domain} from Watchlist`);
-    } else {
-      const snap = snapshotFromReport(report);
-      const drifts = computeDrifts(snap, snap);
-      const entry: WatchlistEntry = {
-        domain: report.domain,
-        addedAt: new Date().toISOString(),
-        baseline: snap,
-        latest: snap,
-        drifts,
-      };
-      updateWatchlist([entry, ...watchlist]);
-      notify(`Added ${report.domain} to Watchlist`);
-    }
-  }, [notify, report, updateWatchlist, watchlist]);
+    toggleWatchDomain(report.domain);
+  }, [report, toggleWatchDomain]);
+
+  const markAlertRead = useCallback(
+    (id: string) => {
+      updateWatchlistAlerts((prev) =>
+        prev.map((a) => (a.id === id ? { ...a, read: true } : a)),
+      );
+    },
+    [updateWatchlistAlerts],
+  );
+
+  const markAllAlertsRead = useCallback(() => {
+    updateWatchlistAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
+  }, [updateWatchlistAlerts]);
+
+  const clearAlerts = useCallback(() => {
+    updateWatchlistAlerts(() => []);
+    setActiveAlertBanner(null);
+  }, [updateWatchlistAlerts]);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -346,6 +734,13 @@ export function App() {
     ) => {
       const targetDomain = (overrideDomain ?? domain).trim();
       if (!targetDomain) return;
+
+      const literalIp = extractLiteralIp(targetDomain);
+      if (literalIp) {
+        handleDeepScanIp(literalIp);
+        notify(`Detected IP ${literalIp} — opened in IP Deep Scan`);
+        return;
+      }
 
       const normalized = normalizeDomainForCache(targetDomain);
       const effectiveDkimInput =
@@ -464,22 +859,48 @@ export function App() {
         });
 
         // Update Watchlist snapshot automatically if this domain is watched
-        setWatchlist((prev) => {
-          if (!prev.some((w) => w.domain === res.domain)) return prev;
+        const inspectTarget = watchlistRef.current.find(
+          (w) => w.domain.toLowerCase() === res.domain.toLowerCase(),
+        );
+        if (inspectTarget) {
           const snap = snapshotFromReport(res);
-          const next = prev.map((w) => {
-            if (w.domain !== res.domain) return w;
-            const baseline = w.baseline ?? snap;
-            return {
-              ...w,
-              baseline,
-              latest: snap,
-              drifts: computeDrifts(baseline, snap),
+          const baseline = inspectTarget.baseline ?? snap;
+          const drifts = computeDrifts(baseline, snap);
+          const newDrifts = findNewDrifts(
+            drifts,
+            inspectTarget.lastNotifiedDriftKeys,
+          );
+          const nowIso = new Date().toISOString();
+          const nextWatchlist = watchlistRef.current.map((w) =>
+            w.domain.toLowerCase() === res.domain.toLowerCase()
+              ? {
+                  ...w,
+                  baseline,
+                  latest: snap,
+                  drifts,
+                  lastCheckedAt: nowIso,
+                  lastNotifiedDriftKeys: drifts.map(driftKey),
+                }
+              : w,
+          );
+          updateWatchlist(nextWatchlist);
+
+          if (newDrifts.length > 0) {
+            const evt: WatchlistAlertEvent = {
+              id: `${res.domain}-${Date.now()}`,
+              domain: res.domain,
+              detectedAt: nowIso,
+              read: false,
+              source: "inspect",
+              drifts: newDrifts,
             };
-          });
-          saveWatchlist(next);
-          return next;
-        });
+            updateWatchlistAlerts((prev) => [evt, ...prev]);
+            setActiveAlertBanner(evt);
+            if (watchlistSettingsRef.current.soundAlerts) {
+              playAlertChime();
+            }
+          }
+        }
       } catch (err) {
         setError(String(err));
       } finally {
@@ -634,6 +1055,8 @@ export function App() {
         cachedDomains={cachedDomainsMap}
         cacheCount={cacheCount}
         onClearCache={() => void handleClearCache()}
+        watchedDomains={watchedDomainsSet}
+        onToggleWatchDomain={toggleWatchDomain}
         activeDomain={report?.domain}
       />
 
@@ -661,6 +1084,7 @@ export function App() {
             {(
               [
                 ["inspector", "Domain Inspector", Globe2],
+                ["ip-scan", "IP Deep Scan", Radar],
                 ["watchlist", "Watchlist", Bookmark],
                 ["bulk", "Bulk Checker", ListChecks],
                 ["monitor", "Live Monitor", Radio],
@@ -694,6 +1118,140 @@ export function App() {
           </div>
 
           <div className="flex items-center gap-2.5">
+            {/* Global Watchlist Alert Bell */}
+            <div ref={alertMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setAlertMenuOpen((v) => !v)}
+                title={
+                  watchlistSettings.autoCheckEnabled
+                    ? `Watchlist alerts (auto-check every ${watchlistSettings.intervalMinutes}m)`
+                    : "Watchlist alerts (auto-check paused)"
+                }
+                className="relative inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface-alt px-2.5 py-1.5 text-xs font-medium text-ink-secondary transition hover:border-sky-500/50 hover:text-ink"
+              >
+                <Bell
+                  className={`h-3.5 w-3.5 ${
+                    unreadAlertsCount > 0
+                      ? "text-rose-600 dark:text-rose-400"
+                      : watchlistChecking
+                        ? "animate-pulse text-sky-600 dark:text-sky-400"
+                        : "text-ink-muted"
+                  }`}
+                />
+                {unreadAlertsCount > 0 && (
+                  <span className="rounded-full bg-rose-600 px-1.5 py-0.2 font-mono text-[10px] font-bold text-white dark:bg-rose-500">
+                    {unreadAlertsCount}
+                  </span>
+                )}
+                {watchlistSettings.autoCheckEnabled && unreadAlertsCount === 0 && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                )}
+              </button>
+
+              {alertMenuOpen && (
+                <div className="absolute right-0 z-40 mt-2 w-80 overflow-hidden rounded-xl border border-line-strong bg-surface shadow-2xl shadow-slate-900/15 sm:w-96 dark:shadow-black/60">
+                  <div className="flex items-center justify-between border-b border-line bg-surface-alt px-3.5 py-2.5">
+                    <div>
+                      <div className="text-xs font-semibold text-ink">
+                        Watchlist Change Alerts
+                      </div>
+                      <div className="text-[10px] text-ink-muted">
+                        {watchlistChecking
+                          ? "Checking watched domains now..."
+                          : watchlistSettings.autoCheckEnabled
+                            ? `Auto-check active (${watchlistSettings.intervalMinutes}m)`
+                            : "Auto-check paused"}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 text-[11px]">
+                      {unreadAlertsCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={markAllAlertsRead}
+                          className="font-medium text-sky-600 hover:underline dark:text-sky-400"
+                        >
+                          Mark read
+                        </button>
+                      )}
+                      {watchlistAlerts.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={clearAlerts}
+                          className="text-ink-muted hover:text-rose-600 dark:hover:text-rose-300"
+                        >
+                          Clear
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="max-h-80 overflow-y-auto divide-y divide-line">
+                    {watchlistAlerts.length === 0 ? (
+                      <div className="px-4 py-8 text-center text-xs text-ink-muted">
+                        No watchlist change alerts yet.
+                      </div>
+                    ) : (
+                      watchlistAlerts.slice(0, 15).map((evt) => (
+                        <div
+                          key={evt.id}
+                          className={`p-3 text-xs ${
+                            evt.read ? "" : "bg-amber-500/[0.07]"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                markAlertRead(evt.id);
+                                setAlertMenuOpen(false);
+                                setWorkspace("inspector");
+                                setDomain(evt.domain);
+                                setActiveTab("health");
+                                void runLookup(evt.domain, { fromNavigation: true });
+                              }}
+                              className="font-mono font-semibold text-sky-700 hover:underline dark:text-sky-300"
+                            >
+                              {evt.domain}
+                            </button>
+                            <span className="text-[10px] text-ink-muted">
+                              {formatRelativeAge(Date.parse(evt.detectedAt))}
+                            </span>
+                          </div>
+                          <div className="mt-1 space-y-0.5 text-[11px] text-ink-secondary">
+                            {evt.drifts.slice(0, 3).map((d, i) => (
+                              <div key={i} className="truncate">
+                                • <span className="font-medium">{d.field}:</span>{" "}
+                                {d.message}
+                              </div>
+                            ))}
+                            {evt.drifts.length > 3 && (
+                              <div className="text-[10px] text-ink-muted">
+                                +{evt.drifts.length - 3} more change(s)
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="border-t border-line bg-surface-alt px-3.5 py-2 text-right">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAlertMenuOpen(false);
+                        setWorkspace("watchlist");
+                      }}
+                      className="text-[11px] font-medium text-sky-600 hover:underline dark:text-sky-400"
+                    >
+                      Open Watchlist &amp; Settings →
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div
               className="inline-flex items-center rounded-lg border border-line bg-surface-alt p-0.5"
               role="group"
@@ -732,10 +1290,91 @@ export function App() {
 
         <main className="flex-1 overflow-y-auto p-6">
           <div className="mx-auto max-w-7xl space-y-5">
+            {activeAlertBanner && (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-950 dark:text-amber-100">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                  <div>
+                    <div className="font-semibold">
+                      Watchlist change detected on{" "}
+                      <span className="font-mono">{activeAlertBanner.domain}</span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] opacity-90">
+                      {activeAlertBanner.drifts
+                        .slice(0, 2)
+                        .map((d) => `[${d.field}] ${d.message}`)
+                        .join(" · ")}
+                      {activeAlertBanner.drifts.length > 2
+                        ? ` (+${activeAlertBanner.drifts.length - 2} more)`
+                        : ""}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      markAlertRead(activeAlertBanner.id);
+                      const d = activeAlertBanner.domain;
+                      setActiveAlertBanner(null);
+                      setWorkspace("inspector");
+                      setDomain(d);
+                      setActiveTab("health");
+                      void runLookup(d, { fromNavigation: true });
+                    }}
+                    className="rounded-md border border-amber-500/40 bg-surface px-2.5 py-1 text-[11px] font-medium text-ink hover:border-sky-500/50"
+                  >
+                    Inspect Domain
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      markAlertRead(activeAlertBanner.id);
+                      setActiveAlertBanner(null);
+                      setWorkspace("watchlist");
+                    }}
+                    className="rounded-md bg-amber-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-amber-500 dark:bg-amber-500 dark:text-slate-950"
+                  >
+                    View Watchlist
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveAlertBanner(null)}
+                    className="rounded p-1 text-ink-muted hover:text-ink"
+                    title="Dismiss alert"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {workspace === "ip-scan" && (
+              <IpDeepScanPanel
+                initialIp={ipScanTarget}
+                autoRunNonce={ipScanNonce}
+                cacheTtl={cacheTtl}
+                onInspectDomain={(d) => handleInspectFromUtility(d)}
+                onNotify={notify}
+              />
+            )}
+
             {workspace === "watchlist" && (
               <WatchlistPanel
                 entries={watchlist}
+                settings={watchlistSettings}
+                alerts={watchlistAlerts}
+                checking={watchlistChecking}
+                checkingDomains={watchlistCheckingDomains}
                 onUpdateEntries={updateWatchlist}
+                onUpdateSettings={updateWatchlistSettings}
+                onAddDomains={(domains) => addDomainsToWatchlist(domains)}
+                onCheckDomains={(domains) =>
+                  void runWatchlistCheck(domains, "manual")
+                }
+                onMarkAlertRead={markAlertRead}
+                onMarkAllAlertsRead={markAllAlertsRead}
+                onClearAlerts={clearAlerts}
                 onInspectDomain={(d) => {
                   setWorkspace("inspector");
                   setDomain(d);
@@ -748,6 +1387,8 @@ export function App() {
 
             {workspace === "bulk" && (
               <BulkCheckerPanel
+                watchedDomains={watchedDomainsSet}
+                onSaveBulkToWatchlist={handleSaveBulkToWatchlist}
                 onInspectDomain={(d) => {
                   setWorkspace("inspector");
                   setDomain(d);
@@ -769,6 +1410,7 @@ export function App() {
                 defaultDomain={report?.domain || domain}
                 currentReport={report}
                 onInspectDomain={handleInspectFromUtility}
+                onDeepScanIp={handleDeepScanIp}
                 onNotify={notify}
               />
             )}
@@ -1314,6 +1956,7 @@ export function App() {
                               [target]: trRes,
                             });
                           }}
+                          onDeepScanIp={handleDeepScanIp}
                           onNotify={notify}
                         />
                       ) : (

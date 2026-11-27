@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   FileSpreadsheet,
   Globe2,
+  Radar,
   ShieldAlert,
   ShieldCheck,
   Sparkles,
@@ -19,6 +20,7 @@ import {
 export interface DmarcReportViewerTabProps {
   onInspectDomain: (domain: string) => void;
   onCheckDnsbl: (target: string) => void;
+  onDeepScanIp?: (ip: string) => void;
   onNotify: (msg: string) => void;
 }
 
@@ -120,6 +122,7 @@ const SAMPLE_TLS_RPT_JSON = JSON.stringify(
 export function DmarcReportViewerTab({
   onInspectDomain,
   onCheckDnsbl,
+  onDeepScanIp,
   onNotify,
 }: DmarcReportViewerTabProps) {
   const [rawText, setRawText] = useState("");
@@ -418,14 +421,26 @@ export function DmarcReportViewerTab({
                             </div>
                           </td>
                           <td className="px-4 py-2.5 text-right">
-                            <button
-                              type="button"
-                              onClick={() => onCheckDnsbl(src.sourceIp)}
-                              className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-alt px-2 py-1 text-[11px] font-medium text-sky-700 hover:border-sky-500/40 dark:text-sky-300"
-                            >
-                              <ShieldAlert className="h-3 w-3" />
-                              DNSBL
-                            </button>
+                            <div className="inline-flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => onCheckDnsbl(src.sourceIp)}
+                                className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-alt px-2 py-1 text-[11px] font-medium text-sky-700 hover:border-sky-500/40 dark:text-sky-300"
+                              >
+                                <ShieldAlert className="h-3 w-3" />
+                                DNSBL
+                              </button>
+                              {onDeepScanIp && (
+                                <button
+                                  type="button"
+                                  onClick={() => onDeepScanIp(src.sourceIp)}
+                                  className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-alt px-2 py-1 text-[11px] font-medium text-sky-700 hover:border-sky-500/40 dark:text-sky-300"
+                                >
+                                  <Radar className="h-3 w-3" />
+                                  Scan IP
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );

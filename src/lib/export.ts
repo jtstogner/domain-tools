@@ -1,4 +1,4 @@
-import type { DnsQueryReport, HealthCheckItem } from "../types/dns";
+import type { DnsQueryReport, HealthCheckItem, IpDeepScanReport } from "../types/dns";
 
 export function formatAsJson(report: DnsQueryReport): string {
   return JSON.stringify(report, null, 2);
@@ -399,4 +399,81 @@ export function formatAsAuditHtml(report: DnsQueryReport): string {
 </body>
 </html>
 `;
+}
+
+export function formatIpScanAsMarkdown(report: IpDeepScanReport): string {
+  const lines: string[] = [];
+  lines.push(`# IP Deep Scan: ${report.ip}`);
+  lines.push("");
+  lines.push(`- **Queried:** ${report.queried_at}`);
+  lines.push(`- **Posture:** ${report.posture} (Exposure Risk: ${report.exposure_risk})`);
+  lines.push(`- **Scope:** ${report.meta.ip_version} · ${report.meta.scope}`);
+  lines.push(`- **Summary:** ${report.summary}`);
+  lines.push("");
+
+  lines.push("## Network & BGP");
+  lines.push(`- **ASN:** ${report.bgp.asn ? `AS${report.bgp.asn}` : "N/A"} (${report.bgp.as_org ?? report.bgp.as_holder ?? "Unknown"})`);
+  lines.push(`- **Prefix:** ${report.bgp.prefix ?? "N/A"} · **RIR:** ${report.bgp.rir ?? "N/A"}`);
+  lines.push(`- **RPKI:** ${report.bgp.rpki_status ?? "unknown"} ${report.bgp.rpki_detail ? `(${report.bgp.rpki_detail})` : ""}`);
+  if (report.bgp.provider_name) {
+    lines.push(`- **Provider:** ${report.bgp.provider_type} — ${report.bgp.provider_name}`);
+  }
+  lines.push("");
+
+  lines.push("## Geolocation");
+  const loc = [report.geo.city, report.geo.region, report.geo.country].filter(Boolean).join(", ");
+  lines.push(`- **Location:** ${loc || "Unknown"}`);
+  if (report.geo.latitude != null && report.geo.longitude != null) {
+    lines.push(`- **Coordinates:** ${report.geo.latitude}, ${report.geo.longitude} (${report.geo.timezone ?? ""})`);
+  }
+  lines.push(`- **ISP / Org:** ${report.geo.isp ?? "N/A"} / ${report.geo.org ?? "N/A"}`);
+  lines.push("");
+
+  if (report.rdap.status === "ok") {
+    lines.push("## RDAP Registry Ownership");
+    lines.push(`- **Net Name / Handle:** ${report.rdap.net_name ?? "N/A"} (${report.rdap.handle ?? "N/A"})`);
+    lines.push(`- **Org:** ${report.rdap.org_name ?? "N/A"}`);
+    lines.push(`- **Range:** ${report.rdap.start_address ?? "?"} – ${report.rdap.end_address ?? "?"}`);
+    if (report.rdap.abuse_email || report.rdap.abuse_phone) {
+      lines.push(`- **Abuse Contact:** ${report.rdap.abuse_email ?? ""} ${report.rdap.abuse_phone ?? ""}`.trim());
+    }
+    lines.push("");
+  }
+
+  lines.push("## Open Ports");
+  const openPorts = report.ports.ports.filter((p) => p.status === "open");
+  if (openPorts.length === 0) {
+    lines.push("No open ports detected in scanned set.");
+  } else {
+    for (const p of openPorts) {
+      lines.push(`- **${p.port}/tcp (${p.service})** [${p.risk_level}] — ${p.latency_ms}ms${p.banner ? ` · \`${p.banner}\`` : ""}`);
+    }
+  }
+  lines.push("");
+
+  lines.push("## Reputation & Threat Intel");
+  lines.push(`- **DNSBLs:** ${report.reputation.blacklists_listed}/${report.reputation.blacklists_checked} listed`);
+  lines.push(`- **Tor Exit:** ${report.reputation.is_tor_exit ? "Yes" : "No"}`);
+  if (report.reputation.internetdb?.indexed) {
+    lines.push(`- **InternetDB Ports:** ${report.reputation.internetdb.ports.join(", ") || "None"}`);
+    lines.push(`- **InternetDB CVEs:** ${report.reputation.internetdb.vulns.join(", ") || "None"}`);
+  }
+  lines.push("");
+
+  if (report.associated_hosts.length > 0) {
+    lines.push(`## Associated Hostnames (${report.associated_hosts.length})`);
+    for (const h of report.associated_hosts) {
+      lines.push(`- ${h.hostname} (${h.sources.join(", ")})`);
+    }
+    lines.push("");
+  }
+
+  if (report.findings.length > 0) {
+    lines.push("## Findings");
+    for (const f of report.findings) {
+      lines.push(`- **[${f.severity.toUpperCase()}] ${f.title}** (${f.category}): ${f.detail}`);
+    }
+  }
+
+  return lines.join("\n");
 }

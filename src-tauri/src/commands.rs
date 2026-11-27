@@ -3,8 +3,8 @@ use tauri::Emitter;
 use crate::dns;
 use crate::models::{
     BulkDomainResult, CtHistoryReport, DnsOnlyResult, DnsQueryReport, DnsTraceReport,
-    MonitorProbeRequest, MonitorProbeResult, PemDecodeReport, PortScanReport, QueryRequest,
-    RedirectReport, RobotsFetchResult, SecurityReport, SmtpDeliverabilityReport,
+    IpDeepScanReport, MonitorProbeRequest, MonitorProbeResult, PemDecodeReport, PortScanReport,
+    QueryRequest, RedirectReport, RobotsFetchResult, SecurityReport, SmtpDeliverabilityReport,
     StandaloneDnsblReport, TldAvailabilityReport, TlsReport, TracerouteReport, TyposquatReport,
 };
 
@@ -134,4 +134,16 @@ pub async fn fetch_robots_txt(domain: String) -> Result<RobotsFetchResult, Strin
 #[tauri::command]
 pub async fn decode_pem(pem_text: String) -> Result<PemDecodeReport, String> {
     Ok(dns::pem::decode_pem_blocks(&pem_text))
+}
+
+#[tauri::command]
+pub async fn deep_scan_ip(
+    app: tauri::AppHandle,
+    target: String,
+    custom_ports: Option<Vec<u16>>,
+) -> Result<IpDeepScanReport, String> {
+    dns::ip_scan::deep_scan_ip_with_progress(&target, custom_ports, move |evt| {
+        let _ = app.emit("ip-scan-progress", &evt);
+    })
+    .await
 }

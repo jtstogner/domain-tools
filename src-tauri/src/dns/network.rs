@@ -159,7 +159,7 @@ pub fn classify_network_provider(
     ("Network".to_string(), None, false)
 }
 
-async fn lookup_ptr(resolver: &TokioResolver, ip: IpAddr) -> Vec<String> {
+pub(crate) async fn lookup_ptr(resolver: &TokioResolver, ip: IpAddr) -> Vec<String> {
     match timeout(DNS_ENRICH_TIMEOUT, resolver.reverse_lookup(ip)).await {
         Ok(Ok(resp)) => resp
             .iter()
@@ -170,7 +170,7 @@ async fn lookup_ptr(resolver: &TokioResolver, ip: IpAddr) -> Vec<String> {
     }
 }
 
-async fn lookup_cymru_asn(
+pub(crate) async fn lookup_cymru_asn(
     resolver: &TokioResolver,
     ip: IpAddr,
 ) -> (Option<u32>, Option<String>, Option<String>, Option<String>) {
@@ -333,7 +333,7 @@ pub fn parse_ripestat_rpki_json(bytes: &[u8]) -> Option<(String, Option<String>)
     Some((normalized.to_string(), detail))
 }
 
-async fn lookup_rpki(
+pub(crate) async fn lookup_rpki(
     client: &reqwest::Client,
     asn: Option<u32>,
     cidr: Option<&str>,

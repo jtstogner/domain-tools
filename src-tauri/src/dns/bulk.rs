@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -112,6 +112,9 @@ async fn check_single_domain(
                 domain: raw_input,
                 status: "error".to_string(),
                 a_records: vec![],
+                aaaa_records: vec![],
+                mx_records: vec![],
+                ns_records: vec![],
                 mx_count: 0,
                 ns_count: 0,
                 http_status: None,
@@ -121,7 +124,9 @@ async fn check_single_domain(
                 ssl_days_remaining: None,
                 ssl_issuer: None,
                 spf_status: "missing".to_string(),
+                spf_record: None,
                 dmarc_status: "missing".to_string(),
+                dmarc_record: None,
                 dnssec_status: "missing".to_string(),
                 registrar: None,
                 domain_expiry_date: None,
@@ -141,6 +146,9 @@ async fn check_single_domain(
                 domain,
                 status: "error".to_string(),
                 a_records: vec![],
+                aaaa_records: vec![],
+                mx_records: vec![],
+                ns_records: vec![],
                 mx_count: 0,
                 ns_count: 0,
                 http_status: None,
@@ -150,7 +158,9 @@ async fn check_single_domain(
                 ssl_days_remaining: None,
                 ssl_issuer: None,
                 spf_status: "missing".to_string(),
+                spf_record: None,
                 dmarc_status: "missing".to_string(),
+                dmarc_record: None,
                 dnssec_status: "missing".to_string(),
                 registrar: None,
                 domain_expiry_date: None,
@@ -163,37 +173,62 @@ async fn check_single_domain(
 
     let fqdn = format!("{domain}.");
     let dns_fut = async {
-        let (a_res, mx_res, ns_res) = tokio::join!(
+        let (a_res, aaaa_res, mx_res, ns_res) = tokio::join!(
             timeout(DNS_TIMEOUT, resolver.lookup(fqdn.clone(), RecordType::A)),
+            timeout(DNS_TIMEOUT, resolver.lookup(fqdn.clone(), RecordType::AAAA)),
             timeout(DNS_TIMEOUT, resolver.lookup(fqdn.clone(), RecordType::MX)),
             timeout(DNS_TIMEOUT, resolver.lookup(fqdn.clone(), RecordType::NS))
         );
 
-        let a_records: Vec<String> = match a_res {
-            Ok(Ok(l)) => l
-                .iter()
-                .filter_map(|r| match r {
-                    RData::A(v4) => Some(Ipv4Addr::from(*v4).to_string()),
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        let mx_count = mx_res
-            .ok()
-            .and_then(|r| r.ok())
-            .map(|l| l.iter().count())
-            .unwrap_or(0);
-        let ns_count = ns_res
-            .ok()
-            .and_then(|r| r.ok())
-            .map(|l| l.iter().count())
-            .unwrap_or(0);
-        (a_records, mx_count, ns_count)
+        let mut a_set = BTreeSet::new();
+        if let Ok(Ok(l)) = a_res {
+            for r in l.iter() {
+                if let RData::A(v4) = r {
+                    a_set.insert(Ipv4Addr::from(*v4).to_string());
+                }
+            }
+        }
+        let a_records: Vec<String> = a_set.into_iter().collect();
+
+        let mut aaaa_set = BTreeSet::new();
+        if let Ok(Ok(l)) = aaaa_res {
+            for r in l.iter() {
+                if let RData::AAAA(v6) = r {
+                    aaaa_set.insert(Ipv6Addr::from(*v6).to_string());
+                }
+            }
+        }
+        let aaaa_records: Vec<String> = aaaa_set.into_iter().collect();
+
+        let mut mx_set = BTreeSet::new();
+        if let Ok(Ok(l)) = mx_res {
+            for r in l.iter() {
+                if let RData::MX(mx) = r {
+                    let ex = mx.exchange().to_string().trim_end_matches('.').to_ascii_lowercase();
+                    mx_set.insert(format!("{} {}", mx.preference(), ex));
+                }
+            }
+        }
+        let mx_records: Vec<String> = mx_set.into_iter().collect();
+
+        let mut ns_set = BTreeSet::new();
+        if let Ok(Ok(l)) = ns_res {
+            for r in l.iter() {
+                if let RData::NS(ns) = r {
+                    let host = ns.0.to_string().trim_end_matches('.').to_ascii_lowercase();
+                    if !host.is_empty() {
+                        ns_set.insert(host);
+                    }
+                }
+            }
+        }
+        let ns_records: Vec<String> = ns_set.into_iter().collect();
+
+        (a_records, aaaa_records, mx_records, ns_records)
     };
 
     let (
-        (a_records, mx_count, ns_count),
+        (a_records, aaaa_records, mx_records, ns_records),
         sec,
         tls_rep,
         (http_status, http_latency_ms, final_url),
@@ -205,6 +240,9 @@ async fn check_single_domain(
         quick_http_probe(&http_client, &domain),
         whois::lookup_whois(&domain)
     );
+
+    let mx_count = mx_records.len();
+    let ns_count = ns_records.len();
 
     let ssl_valid = if tls_rep.error.is_some() {
         None
@@ -235,6 +273,9 @@ async fn check_single_domain(
         domain,
         status,
         a_records,
+        aaaa_records,
+        mx_records,
+        ns_records,
         mx_count,
         ns_count,
         http_status,
@@ -244,7 +285,9 @@ async fn check_single_domain(
         ssl_days_remaining: tls_rep.days_remaining,
         ssl_issuer,
         spf_status: sec.spf.status,
+        spf_record: sec.spf.raw_record,
         dmarc_status: sec.dmarc.status,
+        dmarc_record: sec.dmarc.raw_record,
         dnssec_status: sec.dnssec.status,
         registrar: whois_info.registrar,
         domain_expiry_date: whois_info.expiry_date,

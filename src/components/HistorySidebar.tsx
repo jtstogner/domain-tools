@@ -1,4 +1,5 @@
 import {
+  Bookmark,
   ChevronLeft,
   ChevronRight,
   Database,
@@ -31,6 +32,8 @@ interface HistorySidebarProps {
   cachedDomains?: Record<string, { cachedAt: number; fresh: boolean }>;
   cacheCount?: number;
   onClearCache?: () => void;
+  watchedDomains?: Set<string>;
+  onToggleWatchDomain?: (domain: string) => void;
   activeDomain?: string;
 }
 
@@ -43,6 +46,8 @@ export function HistorySidebar({
   cachedDomains,
   cacheCount = 0,
   onClearCache,
+  watchedDomains,
+  onToggleWatchDomain,
   activeDomain,
 }: HistorySidebarProps) {
   if (collapsed) {
@@ -158,6 +163,31 @@ export function HistorySidebar({
                       </div>
                     </div>
                   </button>
+
+                  {onToggleWatchDomain && (
+                    <button
+                      type="button"
+                      onClick={() => onToggleWatchDomain(item.domain)}
+                      title={
+                        watchedDomains?.has(item.domain.toLowerCase())
+                          ? `Remove ${item.domain} from Watchlist`
+                          : `Save ${item.domain} to Watchlist`
+                      }
+                      className={`flex shrink-0 items-center justify-center px-1.5 transition hover:bg-surface ${
+                        watchedDomains?.has(item.domain.toLowerCase())
+                          ? "text-sky-600 opacity-100 dark:text-sky-400"
+                          : "text-ink-muted opacity-0 hover:text-sky-600 group-hover:opacity-100 focus:opacity-100 dark:hover:text-sky-300"
+                      }`}
+                    >
+                      <Bookmark
+                        className={`h-3 w-3 ${
+                          watchedDomains?.has(item.domain.toLowerCase())
+                            ? "fill-current"
+                            : ""
+                        }`}
+                      />
+                    </button>
+                  )}
 
                   <button
                     type="button"

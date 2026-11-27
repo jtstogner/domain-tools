@@ -1,5 +1,6 @@
 import {
   ArrowUpRight,
+  Bookmark,
   Download,
   ExternalLink,
   ListChecks,
@@ -14,6 +15,8 @@ import { runBulkCheck, saveExport } from "../lib/api";
 import type { BulkDomainResult, BulkProgressEvent } from "../types/dns";
 
 interface BulkCheckerPanelProps {
+  watchedDomains?: Set<string>;
+  onSaveBulkToWatchlist?: (items: BulkDomainResult[]) => void;
   onInspectDomain: (domain: string) => void;
   onNotify: (msg: string) => void;
 }
@@ -54,6 +57,8 @@ function csvCell(v: string | number | boolean | null | undefined): string {
 }
 
 export function BulkCheckerPanel({
+  watchedDomains,
+  onSaveBulkToWatchlist,
   onInspectDomain,
   onNotify,
 }: BulkCheckerPanelProps) {
@@ -353,6 +358,16 @@ export function BulkCheckerPanel({
             </div>
 
             <div className="flex items-center gap-2">
+              {onSaveBulkToWatchlist && (
+                <button
+                  type="button"
+                  onClick={() => onSaveBulkToWatchlist(filteredResults)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-2.5 py-1.5 text-xs font-medium text-sky-700 hover:bg-sky-500/20 dark:text-sky-300"
+                >
+                  <Bookmark className="h-3.5 w-3.5" />
+                  Watch All ({filteredResults.length})
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => void exportCsv()}
@@ -458,18 +473,47 @@ export function BulkCheckerPanel({
                       {row.a_records.length}A / {row.mx_count}MX / {row.ns_count}NS
                     </td>
                     <td className="px-3 py-2.5 text-right">
-                      <button
-                        type="button"
-                        onClick={() => onInspectDomain(row.domain)}
-                        className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-alt px-2 py-1 text-[11px] font-medium text-ink-secondary hover:border-sky-500/40 hover:text-ink"
-                      >
-                        Inspect
-                        {row.final_url ? (
-                          <ArrowUpRight className="h-3 w-3" />
-                        ) : (
-                          <ExternalLink className="h-3 w-3" />
+                      <div className="inline-flex items-center gap-1.5">
+                        {onSaveBulkToWatchlist && (
+                          <button
+                            type="button"
+                            onClick={() => onSaveBulkToWatchlist([row])}
+                            title={
+                              watchedDomains?.has(row.domain.toLowerCase())
+                                ? "Already in Watchlist (click to update baseline)"
+                                : "Save to Watchlist"
+                            }
+                            className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-medium transition ${
+                              watchedDomains?.has(row.domain.toLowerCase())
+                                ? "border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                                : "border-line bg-surface-alt text-ink-secondary hover:border-sky-500/40 hover:text-ink"
+                            }`}
+                          >
+                            <Bookmark
+                              className={`h-3 w-3 ${
+                                watchedDomains?.has(row.domain.toLowerCase())
+                                  ? "fill-current"
+                                  : ""
+                              }`}
+                            />
+                            {watchedDomains?.has(row.domain.toLowerCase())
+                              ? "Watched"
+                              : "Watch"}
+                          </button>
                         )}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => onInspectDomain(row.domain)}
+                          className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-alt px-2 py-1 text-[11px] font-medium text-ink-secondary hover:border-sky-500/40 hover:text-ink"
+                        >
+                          Inspect
+                          {row.final_url ? (
+                            <ArrowUpRight className="h-3 w-3" />
+                          ) : (
+                            <ExternalLink className="h-3 w-3" />
+                          )}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}

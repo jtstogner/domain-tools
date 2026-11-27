@@ -670,6 +670,9 @@ export interface BulkDomainResult {
   domain: string;
   status: "healthy" | "caution" | "issue" | "error";
   a_records: string[];
+  aaaa_records?: string[];
+  mx_records?: string[];
+  ns_records?: string[];
   mx_count: number;
   ns_count: number;
   http_status: number | null;
@@ -679,7 +682,9 @@ export interface BulkDomainResult {
   ssl_days_remaining: number | null;
   ssl_issuer: string | null;
   spf_status: string;
+  spf_record?: string | null;
   dmarc_status: string;
+  dmarc_record?: string | null;
   dnssec_status: string;
   registrar: string | null;
   domain_expiry_date: string | null;
@@ -826,4 +831,174 @@ export interface PemDecodeReport {
   chain_order_valid: boolean | null;
   warnings: string[];
   error: string | null;
+}
+
+export interface IpAddressMeta {
+  ip: string;
+  ip_version: "IPv4" | "IPv6" | string;
+  normalized: string;
+  expanded: string | null;
+  hex: string;
+  integer: string;
+  binary: string | null;
+  scope: string;
+  is_public: boolean;
+  is_private: boolean;
+  is_loopback: boolean;
+  is_multicast: boolean;
+  reverse_ptr_zone: string;
+}
+
+export interface IpPtrEntry {
+  hostname: string;
+  forward_ips: string[];
+  fcrdns_valid: boolean;
+  generic_pattern: string | null;
+}
+
+export interface IpBgpInfo {
+  asn: number | null;
+  as_org: string | null;
+  as_holder: string | null;
+  prefix: string | null;
+  rir: string | null;
+  allocated_date: string | null;
+  country_code: string | null;
+  provider_type: string;
+  provider_name: string | null;
+  is_anycast_cdn: boolean;
+  rpki_status: "valid" | "invalid" | "not_found" | "unknown" | string | null;
+  rpki_detail: string | null;
+  announced: boolean | null;
+  neighbors_left: number | null;
+  neighbors_right: number | null;
+  neighbors_uncertain: number | null;
+  related_prefixes: string[];
+}
+
+export interface IpRdapInfo {
+  status: "ok" | "not_found" | "skipped" | "error" | string;
+  rdap_server: string | null;
+  handle: string | null;
+  net_name: string | null;
+  net_type: string | null;
+  parent_handle: string | null;
+  start_address: string | null;
+  end_address: string | null;
+  cidrs: string[];
+  country: string | null;
+  org_name: string | null;
+  abuse_email: string | null;
+  abuse_phone: string | null;
+  tech_email: string | null;
+  registered_date: string | null;
+  last_changed_date: string | null;
+  statuses: string[];
+  remarks: string[];
+  error: string | null;
+}
+
+export interface IpGeoInfo {
+  country: string | null;
+  country_code: string | null;
+  continent: string | null;
+  region: string | null;
+  city: string | null;
+  postal: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  timezone: string | null;
+  utc_offset: string | null;
+  isp: string | null;
+  org: string | null;
+  domain: string | null;
+  is_mobile: boolean | null;
+  is_proxy_or_vpn: boolean | null;
+  is_hosting: boolean | null;
+  source: string | null;
+}
+
+export interface IpInternetDbInfo {
+  indexed: boolean;
+  ports: number[];
+  hostnames: string[];
+  cpes: string[];
+  tags: string[];
+  vulns: string[];
+  error: string | null;
+}
+
+export interface IpReputationInfo {
+  status: "clean" | "caution" | "listed" | "skipped" | string;
+  is_tor_exit: boolean;
+  blacklists_checked: number;
+  blacklists_listed: number;
+  blacklists_blocked: number;
+  blacklists: BlacklistEntry[];
+  internetdb: IpInternetDbInfo | null;
+  signals: string[];
+}
+
+export interface IpHttpProbe {
+  scheme: "https" | "http" | string;
+  url: string;
+  reachable: boolean;
+  http_status: number | null;
+  latency_ms: number;
+  server: string | null;
+  powered_by: string | null;
+  location: string | null;
+  title: string | null;
+  content_type: string | null;
+  alt_svc: string | null;
+  http3_supported: boolean;
+  waf_or_cdn_headers: string[];
+  security_headers: SecurityHeaderStatus[];
+  headers: HttpHeaderItem[];
+  error: string | null;
+}
+
+export interface IpReachabilityInfo {
+  reachable: boolean;
+  probe_port: number | null;
+  samples_ms: number[];
+  min_ms: number | null;
+  avg_ms: number | null;
+  max_ms: number | null;
+  packet_loss_pct: number;
+}
+
+export interface IpAssociatedHost {
+  hostname: string;
+  sources: string[];
+}
+
+export interface IpRiskFinding {
+  severity: "critical" | "high" | "medium" | "low" | "info" | string;
+  category: string;
+  title: string;
+  detail: string;
+}
+
+export interface IpDeepScanReport {
+  ip: string;
+  queried_at: string;
+  latency_ms: number;
+  posture: "clean" | "caution" | "elevated_risk" | string;
+  exposure_risk: "low" | "medium" | "high" | string;
+  summary: string;
+  findings: IpRiskFinding[];
+  meta: IpAddressMeta;
+  ptr_records: IpPtrEntry[];
+  fcrdns_overall: boolean | null;
+  bgp: IpBgpInfo;
+  rdap: IpRdapInfo;
+  geo: IpGeoInfo;
+  reputation: IpReputationInfo;
+  ports: PortScanReport;
+  reachability: IpReachabilityInfo;
+  tls_reports: TlsReport[];
+  http_probes: IpHttpProbe[];
+  associated_hosts: IpAssociatedHost[];
+  warnings: string[];
 }

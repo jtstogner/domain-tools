@@ -36,6 +36,7 @@ export interface UtilitiesPanelProps {
   defaultDomain: string;
   currentReport?: DnsQueryReport | null;
   onInspectDomain: (domain: string, options?: { dkimSelectors?: string }) => void;
+  onDeepScanIp?: (ip: string) => void;
   onNotify: (msg: string) => void;
 }
 
@@ -163,6 +164,7 @@ export function UtilitiesPanel({
   defaultDomain,
   currentReport,
   onInspectDomain,
+  onDeepScanIp,
   onNotify,
 }: UtilitiesPanelProps) {
   const [activeTool, setActiveTool] = useState<UtilToolId>("builder");
@@ -474,6 +476,7 @@ export function UtilitiesPanel({
           <EmailHeaderAnalyzerTab
             onInspectDomain={onInspectDomain}
             onCheckDnsbl={handleJumpToDnsbl}
+            onDeepScanIp={onDeepScanIp}
             onNotify={onNotify}
           />
         )}
@@ -482,6 +485,7 @@ export function UtilitiesPanel({
           <DmarcReportViewerTab
             onInspectDomain={(d) => onInspectDomain(d)}
             onCheckDnsbl={handleJumpToDnsbl}
+            onDeepScanIp={onDeepScanIp}
             onNotify={onNotify}
           />
         )}
@@ -504,6 +508,7 @@ export function UtilitiesPanel({
             initialTarget={dnsblJumpTarget}
             autoRunNonce={dnsblAutoRunNonce}
             onInspectDomain={(d) => onInspectDomain(d)}
+            onDeepScanIp={onDeepScanIp}
             onNotify={onNotify}
           />
         )}

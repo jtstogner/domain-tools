@@ -4,6 +4,7 @@ import {
   Copy,
   ExternalLink,
   Globe2,
+  Radar,
   RefreshCw,
   Search,
   ShieldAlert,
@@ -19,6 +20,7 @@ export interface DnsblCheckerTabProps {
   initialTarget?: string;
   autoRunNonce?: number;
   onInspectDomain?: (domain: string) => void;
+  onDeepScanIp?: (ip: string) => void;
   onNotify: (msg: string) => void;
 }
 
@@ -29,6 +31,7 @@ export function DnsblCheckerTab({
   initialTarget,
   autoRunNonce,
   onInspectDomain,
+  onDeepScanIp,
   onNotify,
 }: DnsblCheckerTabProps) {
   const [target, setTarget] = useState(initialTarget || defaultDomain || "");
@@ -247,6 +250,16 @@ export function DnsblCheckerTab({
                 >
                   <Globe2 className="h-3.5 w-3.5" />
                   Inspect Domain
+                </button>
+              )}
+              {report.target_kind === "ip" && onDeepScanIp && (
+                <button
+                  type="button"
+                  onClick={() => onDeepScanIp(report.target)}
+                  className="inline-flex items-center gap-1 text-sky-600 hover:underline dark:text-sky-400"
+                >
+                  <Radar className="h-3.5 w-3.5" />
+                  Deep Scan IP
                 </button>
               )}
             </div>

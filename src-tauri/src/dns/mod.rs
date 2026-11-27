@@ -2,6 +2,7 @@ pub mod bulk;
 pub mod ct;
 pub mod email_probe;
 pub mod health;
+pub mod ip_scan;
 pub mod monitor;
 pub mod network;
 pub mod pem;

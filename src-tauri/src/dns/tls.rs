@@ -380,51 +380,33 @@ fn empty_tls_report(host: String, port: u16, starttls: Option<String>, handshake
     }
 }
 
-pub async fn inspect_tls(host: &str, port: u16, starttls: Option<&str>) -> TlsReport {
-    let started = Instant::now();
-    let trimmed = host.trim();
-    let normalized_host = match trimmed.parse::<IpAddr>() {
-        Ok(ip) => ip.to_string(),
-        Err(_) => match normalize_domain(trimmed) {
-            Ok(d) => d,
-            Err(e) => {
-                return empty_tls_report(
-                    trimmed.to_string(),
-                    port,
-                    starttls.map(|s| s.to_string()),
-                    0,
-                    e,
-                )
-            }
-        },
-    };
-
-    let effective_starttls = match starttls.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-        Some("none") | Some("") => None,
-        Some("smtp") => Some("smtp".to_string()),
-        Some("imap") => Some("imap".to_string()),
+fn resolve_effective_starttls(port: u16, starttls: Option<&str>) -> Result<Option<String>, String> {
+    match starttls.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("none") | Some("") => Ok(None),
+        Some("smtp") => Ok(Some("smtp".to_string())),
+        Some("imap") => Ok(Some("imap".to_string())),
         Some("auto") | None => match port {
-            25 | 587 => Some("smtp".to_string()),
-            143 => Some("imap".to_string()),
-            _ => None,
+            25 | 587 => Ok(Some("smtp".to_string())),
+            143 => Ok(Some("imap".to_string())),
+            _ => Ok(None),
         },
-        Some(other) => {
-            return empty_tls_report(
-                normalized_host,
-                port,
-                Some(other.to_string()),
-                0,
-                format!("Unsupported STARTTLS mode '{other}'."),
-            )
-        }
-    };
+        Some(other) => Err(format!("Unsupported STARTTLS mode '{other}'.")),
+    }
+}
 
-    let addr_target = format!("{normalized_host}:{port}");
+async fn inspect_tls_with_connector(
+    display_host: String,
+    addr_target: String,
+    server_name: ServerName<'static>,
+    port: u16,
+    effective_starttls: Option<String>,
+    started: Instant,
+) -> TlsReport {
     let mut tcp = match timeout(TCP_TIMEOUT, TcpStream::connect(&addr_target)).await {
         Ok(Ok(stream)) => stream,
         Ok(Err(e)) => {
             return empty_tls_report(
-                normalized_host,
+                display_host,
                 port,
                 effective_starttls,
                 started.elapsed().as_millis() as u64,
@@ -433,7 +415,7 @@ pub async fn inspect_tls(host: &str, port: u16, starttls: Option<&str>) -> TlsRe
         }
         Err(_) => {
             return empty_tls_report(
-                normalized_host,
+                display_host,
                 port,
                 effective_starttls,
                 started.elapsed().as_millis() as u64,
@@ -445,7 +427,7 @@ pub async fn inspect_tls(host: &str, port: u16, starttls: Option<&str>) -> TlsRe
     if let Some(proto) = effective_starttls.as_deref() {
         if let Err(e) = negotiate_starttls(&mut tcp, proto).await {
             return empty_tls_report(
-                normalized_host,
+                display_host,
                 port,
                 effective_starttls,
                 started.elapsed().as_millis() as u64,
@@ -458,7 +440,7 @@ pub async fn inspect_tls(host: &str, port: u16, starttls: Option<&str>) -> TlsRe
         Ok(pair) => pair,
         Err(e) => {
             return empty_tls_report(
-                normalized_host,
+                display_host,
                 port,
                 effective_starttls,
                 started.elapsed().as_millis() as u64,
@@ -467,24 +449,11 @@ pub async fn inspect_tls(host: &str, port: u16, starttls: Option<&str>) -> TlsRe
         }
     };
 
-    let server_name = match ServerName::try_from(normalized_host.clone()) {
-        Ok(sn) => sn,
-        Err(e) => {
-            return empty_tls_report(
-                normalized_host,
-                port,
-                effective_starttls,
-                started.elapsed().as_millis() as u64,
-                format!("Invalid TLS server name: {e}"),
-            )
-        }
-    };
-
     let tls_stream = match timeout(TLS_TIMEOUT, connector.connect(server_name, tcp)).await {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
             return empty_tls_report(
-                normalized_host,
+                display_host,
                 port,
                 effective_starttls,
                 started.elapsed().as_millis() as u64,
@@ -493,7 +462,7 @@ pub async fn inspect_tls(host: &str, port: u16, starttls: Option<&str>) -> TlsRe
         }
         Err(_) => {
             return empty_tls_report(
-                normalized_host,
+                display_host,
                 port,
                 effective_starttls,
                 started.elapsed().as_millis() as u64,
@@ -534,7 +503,7 @@ pub async fn inspect_tls(host: &str, port: u16, starttls: Option<&str>) -> TlsRe
     let leaf = certificates.first();
     let days_remaining = leaf.map(|c| c.days_remaining);
     let hostname_match = leaf
-        .map(|c| hostname_matches_cert(&normalized_host, c.common_name.as_deref(), &c.sans))
+        .map(|c| hostname_matches_cert(&display_host, c.common_name.as_deref(), &c.sans))
         .unwrap_or(false);
 
     let status = if certificates.is_empty() {
@@ -549,7 +518,7 @@ pub async fn inspect_tls(host: &str, port: u16, starttls: Option<&str>) -> TlsRe
 
     TlsReport {
         status,
-        host: normalized_host,
+        host: display_host,
         port,
         starttls: effective_starttls,
         protocol_version,
@@ -562,6 +531,110 @@ pub async fn inspect_tls(host: &str, port: u16, starttls: Option<&str>) -> TlsRe
         certificates,
         error: None,
     }
+}
+
+pub async fn inspect_tls(host: &str, port: u16, starttls: Option<&str>) -> TlsReport {
+    let started = Instant::now();
+    let trimmed = host.trim();
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        return inspect_ip_tls(ip, port, None, starttls).await;
+    }
+
+    let normalized_host = match normalize_domain(trimmed) {
+        Ok(d) => d,
+        Err(e) => {
+            return empty_tls_report(
+                trimmed.to_string(),
+                port,
+                starttls.map(|s| s.to_string()),
+                0,
+                e,
+            )
+        }
+    };
+
+    let effective_starttls = match resolve_effective_starttls(port, starttls) {
+        Ok(mode) => mode,
+        Err(e) => {
+            return empty_tls_report(
+                normalized_host,
+                port,
+                starttls.map(|s| s.to_string()),
+                0,
+                e,
+            )
+        }
+    };
+
+    let server_name = match ServerName::try_from(normalized_host.clone()) {
+        Ok(sn) => sn,
+        Err(e) => {
+            return empty_tls_report(
+                normalized_host,
+                port,
+                effective_starttls,
+                started.elapsed().as_millis() as u64,
+                format!("Invalid TLS server name: {e}"),
+            )
+        }
+    };
+
+    let addr_target = format!("{normalized_host}:{port}");
+    inspect_tls_with_connector(
+        normalized_host,
+        addr_target,
+        server_name,
+        port,
+        effective_starttls,
+        started,
+    )
+    .await
+}
+
+pub async fn inspect_ip_tls(
+    ip: IpAddr,
+    port: u16,
+    sni_override: Option<&str>,
+    starttls: Option<&str>,
+) -> TlsReport {
+    let started = Instant::now();
+    let effective_starttls = match resolve_effective_starttls(port, starttls) {
+        Ok(mode) => mode,
+        Err(e) => {
+            return empty_tls_report(
+                ip.to_string(),
+                port,
+                starttls.map(|s| s.to_string()),
+                0,
+                e,
+            )
+        }
+    };
+
+    let display_host = sni_override
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| ip.to_string());
+
+    let server_name = match sni_override.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(sni) => match ServerName::try_from(sni.to_string()) {
+            Ok(sn) => sn,
+            Err(_) => ServerName::IpAddress(ip.into()),
+        },
+        None => ServerName::IpAddress(ip.into()),
+    };
+
+    let sock = std::net::SocketAddr::new(ip, port);
+    inspect_tls_with_connector(
+        display_host,
+        sock.to_string(),
+        server_name,
+        port,
+        effective_starttls,
+        started,
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -732,6 +732,9 @@ pub struct BulkDomainResult {
     pub domain: String,
     pub status: String,
     pub a_records: Vec<String>,
+    pub aaaa_records: Vec<String>,
+    pub mx_records: Vec<String>,
+    pub ns_records: Vec<String>,
     pub mx_count: usize,
     pub ns_count: usize,
     pub http_status: Option<u16>,
@@ -741,7 +744,9 @@ pub struct BulkDomainResult {
     pub ssl_days_remaining: Option<i64>,
     pub ssl_issuer: Option<String>,
     pub spf_status: String,
+    pub spf_record: Option<String>,
     pub dmarc_status: String,
+    pub dmarc_record: Option<String>,
     pub dnssec_status: String,
     pub registrar: Option<String>,
     pub domain_expiry_date: Option<String>,
@@ -893,4 +898,193 @@ pub struct PemDecodeReport {
     pub chain_order_valid: Option<bool>,
     pub warnings: Vec<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpAddressMeta {
+    pub ip: String,
+    /// "IPv4" | "IPv6"
+    pub ip_version: String,
+    pub normalized: String,
+    pub expanded: Option<String>,
+    pub hex: String,
+    pub integer: String,
+    pub binary: Option<String>,
+    pub scope: String,
+    pub is_public: bool,
+    pub is_private: bool,
+    pub is_loopback: bool,
+    pub is_multicast: bool,
+    pub reverse_ptr_zone: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpPtrEntry {
+    pub hostname: String,
+    pub forward_ips: Vec<String>,
+    pub fcrdns_valid: bool,
+    pub generic_pattern: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpBgpInfo {
+    pub asn: Option<u32>,
+    pub as_org: Option<String>,
+    pub as_holder: Option<String>,
+    pub prefix: Option<String>,
+    pub rir: Option<String>,
+    pub allocated_date: Option<String>,
+    pub country_code: Option<String>,
+    pub provider_type: String,
+    pub provider_name: Option<String>,
+    pub is_anycast_cdn: bool,
+    pub rpki_status: Option<String>,
+    pub rpki_detail: Option<String>,
+    pub announced: Option<bool>,
+    pub neighbors_left: Option<usize>,
+    pub neighbors_right: Option<usize>,
+    pub neighbors_uncertain: Option<usize>,
+    pub related_prefixes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpRdapInfo {
+    /// "ok" | "not_found" | "skipped" | "error"
+    pub status: String,
+    pub rdap_server: Option<String>,
+    pub handle: Option<String>,
+    pub net_name: Option<String>,
+    pub net_type: Option<String>,
+    pub parent_handle: Option<String>,
+    pub start_address: Option<String>,
+    pub end_address: Option<String>,
+    pub cidrs: Vec<String>,
+    pub country: Option<String>,
+    pub org_name: Option<String>,
+    pub abuse_email: Option<String>,
+    pub abuse_phone: Option<String>,
+    pub tech_email: Option<String>,
+    pub registered_date: Option<String>,
+    pub last_changed_date: Option<String>,
+    pub statuses: Vec<String>,
+    pub remarks: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpGeoInfo {
+    pub country: Option<String>,
+    pub country_code: Option<String>,
+    pub continent: Option<String>,
+    pub region: Option<String>,
+    pub city: Option<String>,
+    pub postal: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub timezone: Option<String>,
+    pub utc_offset: Option<String>,
+    pub isp: Option<String>,
+    pub org: Option<String>,
+    pub domain: Option<String>,
+    pub is_mobile: Option<bool>,
+    pub is_proxy_or_vpn: Option<bool>,
+    pub is_hosting: Option<bool>,
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpInternetDbInfo {
+    pub indexed: bool,
+    pub ports: Vec<u16>,
+    pub hostnames: Vec<String>,
+    pub cpes: Vec<String>,
+    pub tags: Vec<String>,
+    pub vulns: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpReputationInfo {
+    /// "clean" | "caution" | "listed" | "skipped"
+    pub status: String,
+    pub is_tor_exit: bool,
+    pub blacklists_checked: usize,
+    pub blacklists_listed: usize,
+    pub blacklists_blocked: usize,
+    pub blacklists: Vec<BlacklistEntry>,
+    pub internetdb: Option<IpInternetDbInfo>,
+    pub signals: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpHttpProbe {
+    /// "https" | "http"
+    pub scheme: String,
+    pub url: String,
+    pub reachable: bool,
+    pub http_status: Option<u16>,
+    pub latency_ms: u64,
+    pub server: Option<String>,
+    pub powered_by: Option<String>,
+    pub location: Option<String>,
+    pub title: Option<String>,
+    pub content_type: Option<String>,
+    pub alt_svc: Option<String>,
+    pub http3_supported: bool,
+    pub waf_or_cdn_headers: Vec<String>,
+    pub security_headers: Vec<SecurityHeaderStatus>,
+    pub headers: Vec<HttpHeaderItem>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpReachabilityInfo {
+    pub reachable: bool,
+    pub probe_port: Option<u16>,
+    pub samples_ms: Vec<u64>,
+    pub min_ms: Option<u64>,
+    pub avg_ms: Option<u64>,
+    pub max_ms: Option<u64>,
+    pub packet_loss_pct: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpAssociatedHost {
+    pub hostname: String,
+    pub sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpRiskFinding {
+    /// "critical" | "high" | "medium" | "low" | "info"
+    pub severity: String,
+    pub category: String,
+    pub title: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpDeepScanReport {
+    pub ip: String,
+    pub queried_at: String,
+    pub latency_ms: u64,
+    /// "clean" | "caution" | "elevated_risk"
+    pub posture: String,
+    /// "low" | "medium" | "high"
+    pub exposure_risk: String,
+    pub summary: String,
+    pub findings: Vec<IpRiskFinding>,
+    pub meta: IpAddressMeta,
+    pub ptr_records: Vec<IpPtrEntry>,
+    pub fcrdns_overall: Option<bool>,
+    pub bgp: IpBgpInfo,
+    pub rdap: IpRdapInfo,
+    pub geo: IpGeoInfo,
+    pub reputation: IpReputationInfo,
+    pub ports: PortScanReport,
+    pub reachability: IpReachabilityInfo,
+    pub tls_reports: Vec<TlsReport>,
+    pub http_probes: Vec<IpHttpProbe>,
+    pub associated_hosts: Vec<IpAssociatedHost>,
+    pub warnings: Vec<String>,
 }

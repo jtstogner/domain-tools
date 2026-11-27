@@ -24,7 +24,8 @@ pub fn run() {
             commands::check_dnsbl,
             commands::check_tld_availability,
             commands::fetch_robots_txt,
-            commands::decode_pem
+            commands::decode_pem,
+            commands::deep_scan_ip
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

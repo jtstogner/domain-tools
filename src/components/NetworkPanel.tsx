@@ -7,6 +7,7 @@ import {
   MapPin,
   Network,
   Play,
+  Radar,
   RefreshCw,
   Route,
   Server,
@@ -23,6 +24,7 @@ interface NetworkPanelProps {
   defaultTarget: string;
   initialTraceroutes?: Record<string, TracerouteReport>;
   onTracerouteResult?: (target: string, report: TracerouteReport) => void;
+  onDeepScanIp?: (ip: string) => void;
   onNotify: (msg: string) => void;
 }
 
@@ -31,6 +33,7 @@ export function NetworkPanel({
   defaultTarget,
   initialTraceroutes,
   onTracerouteResult,
+  onDeepScanIp,
   onNotify,
 }: NetworkPanelProps) {
   const [subTab, setSubTab] = useState<"ips" | "cidr" | "traceroute">("ips");
@@ -274,6 +277,16 @@ export function NetworkPanel({
                       </div>
 
                       <div className="flex flex-wrap items-center gap-1.5">
+                        {onDeepScanIp && (
+                          <button
+                            type="button"
+                            onClick={() => onDeepScanIp(item.ip)}
+                            className="inline-flex items-center gap-1 rounded-md border border-sky-500/40 bg-sky-500/10 px-2 py-0.5 text-[11px] font-medium text-sky-700 hover:bg-sky-500/20 dark:text-sky-300"
+                          >
+                            <Radar className="h-3 w-3" />
+                            Deep Scan
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => {

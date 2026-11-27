@@ -2,6 +2,7 @@ import type {
   CtHistoryReport,
   DnsQueryReport,
   DnsTraceReport,
+  IpDeepScanReport,
   ResolverResult,
   SecurityReport,
   SmtpDeliverabilityReport,
@@ -28,6 +29,13 @@ export interface CachedDomainEntry {
   subResults: CachedSubResults;
 }
 
+export interface CachedIpScanEntry {
+  ip: string;
+  report: IpDeepScanReport;
+  cachedAt: number;
+  traceroute?: TracerouteReport;
+}
+
 export interface ReportChangeItem {
   category: "DNS" | "TLS" | "Health" | "Security" | "Ports" | "WHOIS";
   label: string;
@@ -37,8 +45,9 @@ export interface ReportChangeItem {
 }
 
 const DB_NAME = "domain_tools_cache_v1";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = "domains";
+const IP_STORE_NAME = "ip_scans";
 const MAX_LRU_ENTRIES = 50;
 const TTL_STORAGE_KEY = "domain_tools_cache_ttl_v1";
 
@@ -52,6 +61,7 @@ const VALID_TTL_OPTIONS: ReadonlySet<string> = new Set<CacheTtlOption>([
 
 /** In-memory LRU cache: oldest entry first, most-recently-used entry last. */
 const memoryCache = new Map<string, CachedDomainEntry>();
+const ipMemoryCache = new Map<string, CachedIpScanEntry>();
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 let idbDisabled = false;
 
@@ -63,6 +73,10 @@ function normalizeDomainKey(domain: string): string {
     .replace(/\/.*$/, "")
     .replace(/:\d+$/, "")
     .replace(/\.$/, "");
+}
+
+function normalizeIpKey(ip: string): string {
+  return ip.trim().toLowerCase();
 }
 
 function openCacheDb(): Promise<IDBDatabase | null> {
@@ -79,6 +93,9 @@ function openCacheDb(): Promise<IDBDatabase | null> {
         const db = request.result;
         if (!db.objectStoreNames.contains(STORE_NAME)) {
           db.createObjectStore(STORE_NAME, { keyPath: "domain" });
+        }
+        if (!db.objectStoreNames.contains(IP_STORE_NAME)) {
+          db.createObjectStore(IP_STORE_NAME, { keyPath: "ip" });
         }
       };
 
@@ -110,17 +127,17 @@ function openCacheDb(): Promise<IDBDatabase | null> {
   return dbPromise;
 }
 
-async function idbGetAll(): Promise<CachedDomainEntry[]> {
+async function idbGetAllFromStore<T>(storeName: string): Promise<T[]> {
   const db = await openCacheDb();
-  if (!db) return [];
+  if (!db || !db.objectStoreNames.contains(storeName)) return [];
 
-  return new Promise<CachedDomainEntry[]>((resolve) => {
+  return new Promise<T[]>((resolve) => {
     try {
-      const tx = db.transaction(STORE_NAME, "readonly");
-      const store = tx.objectStore(STORE_NAME);
+      const tx = db.transaction(storeName, "readonly");
+      const store = tx.objectStore(storeName);
       const req = store.getAll();
       req.onsuccess = () => {
-        const result = Array.isArray(req.result) ? (req.result as CachedDomainEntry[]) : [];
+        const result = Array.isArray(req.result) ? (req.result as T[]) : [];
         resolve(result);
       };
       req.onerror = () => resolve([]);
@@ -130,14 +147,18 @@ async function idbGetAll(): Promise<CachedDomainEntry[]> {
   });
 }
 
-async function idbPut(entry: CachedDomainEntry): Promise<void> {
+async function idbGetAll(): Promise<CachedDomainEntry[]> {
+  return idbGetAllFromStore<CachedDomainEntry>(STORE_NAME);
+}
+
+async function idbPutToStore<T>(storeName: string, entry: T): Promise<void> {
   const db = await openCacheDb();
-  if (!db) return;
+  if (!db || !db.objectStoreNames.contains(storeName)) return;
 
   return new Promise<void>((resolve) => {
     try {
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      tx.objectStore(STORE_NAME).put(entry);
+      const tx = db.transaction(storeName, "readwrite");
+      tx.objectStore(storeName).put(entry);
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
       tx.onabort = () => resolve();
@@ -147,17 +168,21 @@ async function idbPut(entry: CachedDomainEntry): Promise<void> {
   });
 }
 
-async function idbDeleteMany(domains: string[]): Promise<void> {
-  if (domains.length === 0) return;
+async function idbPut(entry: CachedDomainEntry): Promise<void> {
+  return idbPutToStore(STORE_NAME, entry);
+}
+
+async function idbDeleteFromStore(storeName: string, keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
   const db = await openCacheDb();
-  if (!db) return;
+  if (!db || !db.objectStoreNames.contains(storeName)) return;
 
   return new Promise<void>((resolve) => {
     try {
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      const store = tx.objectStore(STORE_NAME);
-      for (const domain of domains) {
-        store.delete(domain);
+      const tx = db.transaction(storeName, "readwrite");
+      const store = tx.objectStore(storeName);
+      for (const k of keys) {
+        store.delete(k);
       }
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
@@ -168,14 +193,25 @@ async function idbDeleteMany(domains: string[]): Promise<void> {
   });
 }
 
+async function idbDeleteMany(domains: string[]): Promise<void> {
+  return idbDeleteFromStore(STORE_NAME, domains);
+}
+
 async function idbClear(): Promise<void> {
   const db = await openCacheDb();
   if (!db) return;
 
+  const stores = [STORE_NAME, IP_STORE_NAME].filter((s) =>
+    db.objectStoreNames.contains(s),
+  );
+  if (stores.length === 0) return;
+
   return new Promise<void>((resolve) => {
     try {
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      tx.objectStore(STORE_NAME).clear();
+      const tx = db.transaction(stores, "readwrite");
+      for (const s of stores) {
+        tx.objectStore(s).clear();
+      }
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
       tx.onabort = () => resolve();
@@ -185,18 +221,22 @@ async function idbClear(): Promise<void> {
   });
 }
 
-function touchLru(key: string, entry: CachedDomainEntry): string[] {
-  memoryCache.delete(key);
-  memoryCache.set(key, entry);
+function touchLruMap<T>(map: Map<string, T>, key: string, entry: T): string[] {
+  map.delete(key);
+  map.set(key, entry);
 
   const evicted: string[] = [];
-  while (memoryCache.size > MAX_LRU_ENTRIES) {
-    const oldestKey = memoryCache.keys().next().value;
+  while (map.size > MAX_LRU_ENTRIES) {
+    const oldestKey = map.keys().next().value;
     if (oldestKey === undefined) break;
-    memoryCache.delete(oldestKey);
+    map.delete(oldestKey);
     evicted.push(oldestKey);
   }
   return evicted;
+}
+
+function touchLru(key: string, entry: CachedDomainEntry): string[] {
+  return touchLruMap(memoryCache, key, entry);
 }
 
 export function buildOptionsKey(opts: {
@@ -263,32 +303,60 @@ export function getTtlMs(ttl: CacheTtlOption): number | null {
 }
 
 export async function initDomainCache(): Promise<void> {
-  const persisted = await idbGetAll();
-  if (persisted.length === 0) return;
+  const [persisted, persistedIps] = await Promise.all([
+    idbGetAll(),
+    idbGetAllFromStore<CachedIpScanEntry>(IP_STORE_NAME),
+  ]);
 
-  // Sort oldest -> newest so Map insertion order reflects LRU recency
-  const valid = persisted
-    .filter((item): item is CachedDomainEntry => Boolean(item && typeof item.domain === "string" && item.report))
-    .sort((a, b) => a.cachedAt - b.cachedAt);
+  if (persisted.length > 0) {
+    // Sort oldest -> newest so Map insertion order reflects LRU recency
+    const valid = persisted
+      .filter((item): item is CachedDomainEntry => Boolean(item && typeof item.domain === "string" && item.report))
+      .sort((a, b) => a.cachedAt - b.cachedAt);
 
-  const evicted: string[] = [];
-  for (const rawEntry of valid) {
-    const key = normalizeDomainKey(rawEntry.domain);
-    if (!key) continue;
-    const normalizedEntry: CachedDomainEntry = {
-      ...rawEntry,
-      domain: key,
-      previousReport: rawEntry.previousReport ?? null,
-      subResults: rawEntry.subResults ?? {},
-    };
-    const existing = memoryCache.get(key);
-    if (!existing || normalizedEntry.cachedAt >= existing.cachedAt) {
-      evicted.push(...touchLru(key, normalizedEntry));
+    const evicted: string[] = [];
+    for (const rawEntry of valid) {
+      const key = normalizeDomainKey(rawEntry.domain);
+      if (!key) continue;
+      const normalizedEntry: CachedDomainEntry = {
+        ...rawEntry,
+        domain: key,
+        previousReport: rawEntry.previousReport ?? null,
+        subResults: rawEntry.subResults ?? {},
+      };
+      const existing = memoryCache.get(key);
+      if (!existing || normalizedEntry.cachedAt >= existing.cachedAt) {
+        evicted.push(...touchLru(key, normalizedEntry));
+      }
+    }
+
+    if (evicted.length > 0) {
+      await idbDeleteMany(evicted);
     }
   }
 
-  if (evicted.length > 0) {
-    await idbDeleteMany(evicted);
+  if (persistedIps.length > 0) {
+    const validIps = persistedIps
+      .filter((item): item is CachedIpScanEntry => Boolean(item && typeof item.ip === "string" && item.report))
+      .sort((a, b) => a.cachedAt - b.cachedAt);
+
+    const evictedIps: string[] = [];
+    for (const rawIpEntry of validIps) {
+      const key = normalizeIpKey(rawIpEntry.ip);
+      if (!key) continue;
+      const normalizedIpEntry: CachedIpScanEntry = {
+        ...rawIpEntry,
+        ip: key,
+      };
+      const existing = ipMemoryCache.get(key);
+      if (!existing || normalizedIpEntry.cachedAt >= existing.cachedAt) {
+        evictedIps.push(...touchLruMap(ipMemoryCache, key, normalizedIpEntry));
+      }
+    }
+
+    if (evictedIps.length > 0) {
+      await idbDeleteFromStore(IP_STORE_NAME, evictedIps);
+    }
   }
 }
 
@@ -410,7 +478,63 @@ export function getCacheStats(): { count: number } {
 
 export async function clearDomainCache(): Promise<void> {
   memoryCache.clear();
+  ipMemoryCache.clear();
   await idbClear();
+}
+
+export function getCachedIpScan(ip: string): CachedIpScanEntry | null {
+  const key = normalizeIpKey(ip);
+  if (!key) return null;
+  const entry = ipMemoryCache.get(key);
+  if (!entry) return null;
+  ipMemoryCache.delete(key);
+  ipMemoryCache.set(key, entry);
+  return entry;
+}
+
+export function isIpCacheFresh(entry: CachedIpScanEntry, ttl?: CacheTtlOption): boolean {
+  const effectiveTtl = ttl ?? getCacheTtlSetting();
+  if (effectiveTtl === "off") return false;
+  if (effectiveTtl === "session") return true;
+  const ttlMs = getTtlMs(effectiveTtl);
+  if (ttlMs === null) return true;
+  return Date.now() - entry.cachedAt < ttlMs;
+}
+
+export async function saveCachedIpScan(report: IpDeepScanReport): Promise<CachedIpScanEntry> {
+  const key = normalizeIpKey(report.ip);
+  const existing = ipMemoryCache.get(key);
+  const entry: CachedIpScanEntry = {
+    ip: key,
+    report,
+    cachedAt: Date.now(),
+    traceroute: existing?.traceroute,
+  };
+  const evicted = touchLruMap(ipMemoryCache, key, entry);
+  await idbPutToStore(IP_STORE_NAME, entry);
+  if (evicted.length > 0) {
+    await idbDeleteFromStore(IP_STORE_NAME, evicted);
+  }
+  return entry;
+}
+
+export async function saveCachedIpTraceroute(
+  ip: string,
+  traceroute: TracerouteReport,
+): Promise<void> {
+  const key = normalizeIpKey(ip);
+  const existing = ipMemoryCache.get(key);
+  if (!existing) return;
+  const updated: CachedIpScanEntry = {
+    ...existing,
+    traceroute,
+  };
+  touchLruMap(ipMemoryCache, key, updated);
+  await idbPutToStore(IP_STORE_NAME, updated);
+}
+
+export function listCachedIpScans(): CachedIpScanEntry[] {
+  return Array.from(ipMemoryCache.values()).reverse();
 }
 
 export function formatRelativeAge(timestampMs: number): string {

@@ -45,24 +45,45 @@ const COMMON_PORTS: &[(u16, &str, &str)] = &[
 ];
 
 fn lookup_port_meta(port: u16) -> (&'static str, &'static str) {
-    COMMON_PORTS
-        .iter()
-        .find(|(p, _, _)| *p == port)
-        .map(|(_, svc, cat)| (*svc, *cat))
-        .unwrap_or(("Custom", "Custom"))
+    if let Some((_, svc, cat)) = COMMON_PORTS.iter().find(|(p, _, _)| *p == port) {
+        return (*svc, *cat);
+    }
+    match port {
+        139 => ("NetBIOS", "File Sharing"),
+        445 => ("SMB", "File Sharing"),
+        389 => ("LDAP", "Directory"),
+        636 => ("LDAPS", "Directory"),
+        2222 => ("SSH Alt", "Remote Access"),
+        2375 => ("Docker API (Unencrypted)", "Container"),
+        2376 => ("Docker API (TLS)", "Container"),
+        5985 => ("WinRM HTTP", "Remote Access"),
+        5986 => ("WinRM HTTPS", "Remote Access"),
+        6443 => ("Kubernetes API", "Container"),
+        8000 => ("HTTP Alt", "Web"),
+        8888 => ("HTTP Alt", "Web"),
+        9090 => ("Admin / Prometheus", "Infrastructure"),
+        9200 => ("Elasticsearch", "Database"),
+        11211 => ("Memcached", "Database"),
+        _ => ("Custom", "Custom"),
+    }
 }
 
 pub fn classify_port_risk(port: u16) -> (&'static str, Option<&'static str>) {
     match port {
         23 => ("high", Some("Unencrypted Telnet exposed publicly.")),
-        3306 | 5432 | 6379 | 27017 | 1433 => (
+        445 | 139 => ("high", Some("SMB / NetBIOS file sharing port exposed publicly.")),
+        2375 => ("high", Some("Unencrypted Docker daemon API exposed publicly.")),
+        3306 | 5432 | 6379 | 27017 | 1433 | 9200 | 11211 => (
             "high",
-            Some("Database port reachable from the public internet."),
+            Some("Database / cache port reachable from the public internet."),
         ),
         21 => ("caution", Some("Plaintext FTP control port exposed.")),
-        22 => ("caution", Some("Public SSH access enabled.")),
+        22 | 2222 => ("caution", Some("Public SSH access enabled.")),
+        389 => ("caution", Some("Unencrypted LDAP directory port exposed.")),
         3389 => ("caution", Some("Public Windows RDP port exposed.")),
         5900 => ("caution", Some("Public VNC remote desktop port exposed.")),
+        5985 | 5986 => ("caution", Some("Public WinRM remote management port exposed.")),
+        2376 | 6443 | 9090 => ("caution", Some("Cluster / management control plane port exposed.")),
         2082 | 2086 => ("caution", Some("Unencrypted cPanel/WHM port exposed.")),
         _ => ("normal", None),
     }
@@ -173,14 +194,15 @@ fn status_rank(status: &str) -> u8 {
     }
 }
 
-pub async fn scan_ip_ports(
+pub async fn scan_ip_with_ports(
     target_host: String,
     ip: IpAddr,
     available_ips: Vec<String>,
+    base_ports: &[u16],
     custom_ports: Option<Vec<u16>>,
 ) -> PortScanReport {
     let start = Instant::now();
-    let mut port_list: Vec<u16> = COMMON_PORTS.iter().map(|(p, _, _)| *p).collect();
+    let mut port_list: Vec<u16> = base_ports.to_vec();
 
     if let Some(extras) = custom_ports {
         for p in extras {
@@ -217,6 +239,16 @@ pub async fn scan_ip_ports(
         ports,
         error: None,
     }
+}
+
+pub async fn scan_ip_ports(
+    target_host: String,
+    ip: IpAddr,
+    available_ips: Vec<String>,
+    custom_ports: Option<Vec<u16>>,
+) -> PortScanReport {
+    let base: Vec<u16> = COMMON_PORTS.iter().map(|(p, _, _)| *p).collect();
+    scan_ip_with_ports(target_host, ip, available_ips, &base, custom_ports).await
 }
 
 pub async fn scan_domain_ports(domain: &str, resolvers: &[ResolverResult]) -> PortScanReport {
