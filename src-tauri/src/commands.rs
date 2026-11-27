@@ -3,8 +3,9 @@ use tauri::Emitter;
 use crate::dns;
 use crate::models::{
     BulkDomainResult, CtHistoryReport, DnsOnlyResult, DnsQueryReport, DnsTraceReport,
-    MonitorProbeRequest, MonitorProbeResult, PortScanReport, QueryRequest, RedirectReport,
-    SmtpDeliverabilityReport, TlsReport, TracerouteReport, TyposquatReport,
+    MonitorProbeRequest, MonitorProbeResult, PemDecodeReport, PortScanReport, QueryRequest,
+    RedirectReport, RobotsFetchResult, SecurityReport, SmtpDeliverabilityReport,
+    StandaloneDnsblReport, TldAvailabilityReport, TlsReport, TracerouteReport, TyposquatReport,
 };
 
 #[tauri::command]
@@ -99,4 +100,38 @@ pub async fn save_export_file(path: String, content: String) -> Result<(), Strin
     tokio::fs::write(&path, content.as_bytes())
         .await
         .map_err(|e| format!("Failed to write export file '{path}': {e}"))
+}
+
+#[tauri::command]
+pub async fn recheck_security(
+    domain: String,
+    dkim_selectors: Vec<String>,
+) -> Result<SecurityReport, String> {
+    let normalized = dns::normalize_domain(&domain)?;
+    let (_, _, resolver) = dns::build_resolver("cloudflare", None, false)
+        .or_else(|_| dns::build_resolver("google", None, false))?;
+    Ok(dns::security::run_security_checks(&normalized, &resolver, &dkim_selectors).await)
+}
+
+#[tauri::command]
+pub async fn check_dnsbl(target: String) -> Result<StandaloneDnsblReport, String> {
+    dns::health::check_standalone_dnsbl(&target).await
+}
+
+#[tauri::command]
+pub async fn check_tld_availability(
+    base_name: String,
+    tlds: Option<Vec<String>>,
+) -> Result<TldAvailabilityReport, String> {
+    dns::tld::check_tld_availability(&base_name, tlds).await
+}
+
+#[tauri::command]
+pub async fn fetch_robots_txt(domain: String) -> Result<RobotsFetchResult, String> {
+    dns::robots::fetch_robots_txt(&domain).await
+}
+
+#[tauri::command]
+pub async fn decode_pem(pem_text: String) -> Result<PemDecodeReport, String> {
+    Ok(dns::pem::decode_pem_blocks(&pem_text))
 }

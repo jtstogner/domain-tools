@@ -7,13 +7,24 @@ export type RecordTypeName =
   | "NS"
   | "SOA"
   | "CAA"
-  | "SRV";
+  | "SRV"
+  | "HTTPS"
+  | "SVCB"
+  | "PTR"
+  | "TLSA"
+  | "SSHFP"
+  | "NAPTR"
+  | "DNSKEY"
+  | "DS";
 
 export type ResolverId =
   | "cloudflare"
   | "google"
   | "quad9"
   | "system"
+  | "cloudflare_doh"
+  | "google_doh"
+  | "quad9_dot"
   | "custom";
 
 export interface QueryRequest {
@@ -743,4 +754,76 @@ export interface HistoryEntry {
   dkimStatus: DkimCheck["status"];
   dnssecStatus: DnssecCheck["status"];
   totalRecords: number;
+}
+
+export interface StandaloneDnsblReport {
+  target: string;
+  target_kind: string;
+  resolved_ips: string[];
+  checked_count: number;
+  listed_count: number;
+  blocked_count: number;
+  latency_ms: number;
+  entries: BlacklistEntry[];
+  error: string | null;
+}
+
+export interface TldAvailabilityItem {
+  domain: string;
+  tld: string;
+  status: string;
+  has_dns: boolean;
+  registrar: string | null;
+  expiry_date: string | null;
+  latency_ms: number;
+  detail: string | null;
+}
+
+export interface TldAvailabilityReport {
+  base_name: string;
+  checked_count: number;
+  available_count: number;
+  registered_count: number;
+  latency_ms: number;
+  items: TldAvailabilityItem[];
+}
+
+export interface RobotsFetchResult {
+  domain: string;
+  url: string;
+  http_status: number | null;
+  found: boolean;
+  content: string;
+  sitemaps: string[];
+  latency_ms: number;
+  error: string | null;
+}
+
+export interface PemDecodedItem {
+  kind: string;
+  subject: string;
+  common_name: string | null;
+  issuer: string | null;
+  issuer_org: string | null;
+  sans: string[];
+  not_before: string | null;
+  not_after: string | null;
+  days_remaining: number | null;
+  serial_hex: string | null;
+  signature_algorithm: string;
+  public_key_algorithm: string;
+  public_key_bits: number | null;
+  sha256_fingerprint: string;
+  spki_sha256: string | null;
+  is_ca: boolean;
+  is_self_signed: boolean;
+  tlsa_3_1_1: string | null;
+  tlsa_3_0_1: string | null;
+}
+
+export interface PemDecodeReport {
+  items: PemDecodedItem[];
+  chain_order_valid: boolean | null;
+  warnings: string[];
+  error: string | null;
 }

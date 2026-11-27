@@ -1,4 +1,4 @@
-import { Copy, Check, Search, AlertTriangle, Info } from "lucide-react";
+import { Copy, Check, Search, AlertTriangle, Info, Lock } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { DnsQueryReport, DnsRecordItem } from "../types/dns";
 import { copyToClipboard } from "../lib/api";
@@ -13,7 +13,21 @@ const TYPE_COLORS: Record<string, string> = {
   SOA: "bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30",
   CAA: "bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-300 border-fuchsia-500/30",
   SRV: "bg-teal-500/15 text-teal-700 dark:text-teal-300 border-teal-500/30",
+  HTTPS: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
+  SVCB: "bg-teal-500/15 text-teal-700 dark:text-teal-300 border-teal-500/30",
+  PTR: "bg-slate-500/15 text-slate-700 dark:text-slate-300 border-slate-500/30",
+  TLSA: "bg-purple-500/15 text-purple-700 dark:text-purple-300 border-purple-500/30",
+  SSHFP: "bg-orange-500/15 text-orange-700 dark:text-orange-300 border-orange-500/30",
+  NAPTR: "bg-pink-500/15 text-pink-700 dark:text-pink-300 border-pink-500/30",
+  DNSKEY: "bg-violet-500/15 text-violet-700 dark:text-violet-300 border-violet-500/30",
+  DS: "bg-blue-500/15 text-blue-700 dark:text-blue-300 border-blue-500/30",
 };
+
+const ENCRYPTED_RESOLVER_IDS = new Set([
+  "cloudflare_doh",
+  "google_doh",
+  "quad9_dot",
+]);
 
 function formatTtl(seconds: number): string {
   if (seconds < 60) return `${seconds}s`;
@@ -121,6 +135,9 @@ export function RecordsTable({
                       : "bg-rose-500 dark:bg-rose-400"
                   }`}
                 />
+                {ENCRYPTED_RESOLVER_IDS.has(res.id) && (
+                  <Lock className="h-3 w-3 text-teal-600 dark:text-teal-400" />
+                )}
                 <span>{res.label}</span>
                 <span className="font-mono text-[11px] text-ink-muted">
                   {res.total_latency_ms}ms
@@ -278,6 +295,153 @@ export function RecordsTable({
                             Priority {String(record.details.priority)} · Weight{" "}
                             {String(record.details.weight)} · Port{" "}
                             {String(record.details.port)}
+                          </div>
+                        )}
+                        {record.details &&
+                          (record.record_type === "HTTPS" ||
+                            record.record_type === "SVCB") && (
+                            <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-muted">
+                              {record.details.mode !== undefined && (
+                                <span>Mode: {String(record.details.mode)}</span>
+                              )}
+                              {record.details.priority !== undefined && (
+                                <span>Priority: {String(record.details.priority)}</span>
+                              )}
+                              {record.details.target !== undefined && (
+                                <span>Target: {String(record.details.target)}</span>
+                              )}
+                              {Array.isArray(record.details.params) &&
+                                record.details.params.length > 0 && (
+                                  <span>
+                                    Params:{" "}
+                                    {(record.details.params as unknown[])
+                                      .map((p) => String(p))
+                                      .join(" · ")}
+                                  </span>
+                                )}
+                              {typeof record.details.params === "string" &&
+                                record.details.params && (
+                                  <span>Params: {record.details.params}</span>
+                                )}
+                              {record.details.params !== null &&
+                                typeof record.details.params === "object" &&
+                                !Array.isArray(record.details.params) &&
+                                Object.keys(
+                                  record.details.params as Record<string, unknown>,
+                                ).length > 0 && (
+                                  <span>
+                                    Params:{" "}
+                                    {Object.entries(
+                                      record.details.params as Record<string, unknown>,
+                                    )
+                                      .map(([k, v]) => `${k}=${String(v)}`)
+                                      .join(" · ")}
+                                  </span>
+                                )}
+                            </div>
+                          )}
+                        {record.details && record.record_type === "TLSA" && (
+                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-muted">
+                            {record.details.usage !== undefined && (
+                              <span>
+                                Usage: {String(record.details.usage)}
+                                {record.details.usage_label
+                                  ? ` (${String(record.details.usage_label)})`
+                                  : ""}
+                              </span>
+                            )}
+                            {record.details.selector !== undefined && (
+                              <span>
+                                Selector: {String(record.details.selector)}
+                                {record.details.selector_label
+                                  ? ` (${String(record.details.selector_label)})`
+                                  : ""}
+                              </span>
+                            )}
+                            {record.details.matching_type !== undefined && (
+                              <span>
+                                Matching: {String(record.details.matching_type)}
+                                {record.details.matching_type_label
+                                  ? ` (${String(record.details.matching_type_label)})`
+                                  : ""}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {record.details && record.record_type === "SSHFP" && (
+                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-muted">
+                            {record.details.algorithm !== undefined && (
+                              <span>
+                                Algorithm:{" "}
+                                {record.details.algorithm_label
+                                  ? `${String(record.details.algorithm_label)} (${String(record.details.algorithm)})`
+                                  : String(record.details.algorithm)}
+                              </span>
+                            )}
+                            {record.details.fp_type !== undefined && (
+                              <span>
+                                Hash:{" "}
+                                {record.details.fp_type_label
+                                  ? `${String(record.details.fp_type_label)} (${String(record.details.fp_type)})`
+                                  : String(record.details.fp_type)}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {record.details && record.record_type === "DS" && (
+                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-muted">
+                            {record.details.key_tag !== undefined && (
+                              <span>Key Tag: {String(record.details.key_tag)}</span>
+                            )}
+                            {record.details.algorithm !== undefined && (
+                              <span>Algorithm: {String(record.details.algorithm)}</span>
+                            )}
+                            {record.details.digest_type !== undefined && (
+                              <span>Digest: {String(record.details.digest_type)}</span>
+                            )}
+                          </div>
+                        )}
+                        {record.details && record.record_type === "DNSKEY" && (
+                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-muted">
+                            {record.details.role !== undefined && (
+                              <span>Role: {String(record.details.role)}</span>
+                            )}
+                            {record.details.key_tag !== undefined && (
+                              <span>Key Tag: {String(record.details.key_tag)}</span>
+                            )}
+                            {record.details.flags !== undefined && (
+                              <span>Flags: {String(record.details.flags)}</span>
+                            )}
+                            {record.details.algorithm !== undefined && (
+                              <span>Algorithm: {String(record.details.algorithm)}</span>
+                            )}
+                            {record.details.revoked === true && (
+                              <span className="font-semibold text-rose-600 dark:text-rose-400">
+                                REVOKED
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {record.details && record.record_type === "NAPTR" && (
+                          <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-muted">
+                            {record.details.order !== undefined && (
+                              <span>Order: {String(record.details.order)}</span>
+                            )}
+                            {record.details.preference !== undefined && (
+                              <span>Preference: {String(record.details.preference)}</span>
+                            )}
+                            {record.details.flags !== undefined && (
+                              <span>Flags: {String(record.details.flags)}</span>
+                            )}
+                            {record.details.services !== undefined && (
+                              <span>Services: {String(record.details.services)}</span>
+                            )}
+                            {record.details.replacement !== undefined &&
+                              String(record.details.replacement) !== "." && (
+                                <span>
+                                  Replacement: {String(record.details.replacement)}
+                                </span>
+                              )}
                           </div>
                         )}
                       </td>

@@ -14,25 +14,31 @@ import type { TyposquatReport } from "../types/dns";
 
 interface TyposquatPanelProps {
   domain: string;
+  initialReport?: TyposquatReport | null;
+  onScanResult?: (report: TyposquatReport) => void;
   onInspectDomain: (domain: string) => void;
   onNotify: (msg: string) => void;
 }
 
 export function TyposquatPanel({
   domain,
+  initialReport,
+  onScanResult,
   onInspectDomain,
   onNotify,
 }: TyposquatPanelProps) {
   const [loading, setLoading] = useState(false);
-  const [report, setReport] = useState<TyposquatReport | null>(null);
+  const [report, setReport] = useState<TyposquatReport | null>(
+    () => initialReport ?? null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [filterMode, setFilterMode] = useState<"registered" | "high" | "web" | "all">("registered");
   const [search, setSearch] = useState("");
 
   useEffect(() => {
-    setReport(null);
+    setReport(initialReport ?? null);
     setError(null);
-  }, [domain]);
+  }, [domain, initialReport]);
 
   const handleScan = async () => {
     setLoading(true);
@@ -40,6 +46,7 @@ export function TyposquatPanel({
     try {
       const res = await scanTyposquats(domain);
       setReport(res);
+      onScanResult?.(res);
     } catch (err) {
       setError(String(err));
     } finally {

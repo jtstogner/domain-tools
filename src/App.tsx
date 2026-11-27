@@ -1,7 +1,9 @@
 import {
   Activity,
   AlertCircle,
+  ArrowRight,
   Bookmark,
+  Clock,
   Copy,
   Database,
   FileCode2,
@@ -18,12 +20,17 @@ import {
   Network,
   Plug,
   Radio,
+  RefreshCw,
   Route,
   Server,
   Shield,
   ShieldAlert,
+  Sparkles,
   Sun,
+  Trash2,
   Wrench,
+  X,
+  Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BulkCheckerPanel } from "./components/BulkCheckerPanel";
@@ -36,7 +43,7 @@ import { LiveMonitorPanel } from "./components/LiveMonitorPanel";
 import { NetworkPanel } from "./components/NetworkPanel";
 import { PortsPanel } from "./components/PortsPanel";
 import { PropagationView } from "./components/PropagationView";
-import { ALL_RECORD_TYPES, QueryBar } from "./components/QueryBar";
+import { QueryBar, STANDARD_RECORD_TYPES } from "./components/QueryBar";
 import {
   INITIAL_PROGRESS_STAGES,
   type ProgressStageState,
@@ -52,7 +59,26 @@ import { UtilitiesPanel } from "./components/UtilitiesPanel";
 import { WatchlistPanel } from "./components/WatchlistPanel";
 import { WebsitePanel } from "./components/WebsitePanel";
 import { WhoisPanel } from "./components/WhoisPanel";
-import { copyToClipboard, queryDomain } from "./lib/api";
+import { copyToClipboard, queryDomain, recheckSecurity } from "./lib/api";
+import {
+  buildOptionsKey,
+  type CachedSubResults,
+  type CacheTtlOption,
+  clearDomainCache,
+  computeReportDiff,
+  formatRelativeAge,
+  getCachedDomain,
+  getCacheStats,
+  getCacheTtlSetting,
+  initDomainCache,
+  isCacheFresh,
+  listCachedDomains,
+  type ReportChangeItem,
+  saveCachedReport,
+  saveCachedSubResult,
+  setCacheTtlSetting,
+  updateCachedSecurity,
+} from "./lib/domainCache";
 import { formatAsZoneFile } from "./lib/export";
 import { type ThemePreference, useTheme } from "./lib/theme";
 import {
@@ -111,12 +137,30 @@ const THEME_OPTIONS: { id: ThemePreference; label: string; Icon: typeof Monitor 
   { id: "dark", label: "Dark", Icon: Moon },
 ];
 
+const CACHE_TTL_OPTIONS: { id: CacheTtlOption; label: string }[] = [
+  { id: "5m", label: "5m" },
+  { id: "15m", label: "15m" },
+  { id: "1h", label: "1h" },
+  { id: "session", label: "Session" },
+  { id: "off", label: "Off" },
+];
+
+function normalizeDomainForCache(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/.*$/, "")
+    .replace(/:\d+$/, "")
+    .replace(/\.$/, "");
+}
+
 export function App() {
   const { preference, setPreference } = useTheme();
   const [workspace, setWorkspace] = useState<WorkspaceMode>("inspector");
   const [domain, setDomain] = useState("");
   const [recordTypes, setRecordTypes] =
-    useState<RecordTypeName[]>(ALL_RECORD_TYPES);
+    useState<RecordTypeName[]>(STANDARD_RECORD_TYPES);
   const [resolvers, setResolvers] = useState<ResolverId[]>([
     "cloudflare",
     "google",
@@ -126,6 +170,7 @@ export function App() {
   const [customResolver, setCustomResolver] = useState("");
   const [dkimSelectorsInput, setDkimSelectorsInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [recheckingDkim, setRecheckingDkim] = useState(false);
   const [queryDomainLabel, setQueryDomainLabel] = useState("");
   const [queryStartedAt, setQueryStartedAt] = useState<number | null>(null);
   const [progressStages, setProgressStages] = useState<ProgressStageState[]>(
@@ -140,7 +185,61 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
 
+  // Per-domain cache state
+  const [cacheTtl, setCacheTtl] = useState<CacheTtlOption>(getCacheTtlSetting);
+  const [cachedDomainsMap, setCachedDomainsMap] = useState<
+    Record<string, { cachedAt: number; fresh: boolean }>
+  >({});
+  const [cacheCount, setCacheCount] = useState(0);
+  const [isReportFromCache, setIsReportFromCache] = useState(false);
+  const [reportCachedAt, setReportCachedAt] = useState<number | null>(null);
+  const [activeSubResults, setActiveSubResults] = useState<CachedSubResults>({});
+  const [reportChanges, setReportChanges] = useState<ReportChangeItem[]>([]);
+  const [, setAgeTick] = useState(0);
+
   const domainInputRef = useRef<HTMLInputElement>(null);
+
+  const refreshCacheIndex = useCallback(() => {
+    setCachedDomainsMap(listCachedDomains());
+    setCacheCount(getCacheStats().count);
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    void initDomainCache().then(() => {
+      if (mounted) {
+        refreshCacheIndex();
+      }
+    });
+    const timer = window.setInterval(() => {
+      setAgeTick((t) => t + 1);
+      refreshCacheIndex();
+    }, 30000);
+    return () => {
+      mounted = false;
+      window.clearInterval(timer);
+    };
+  }, [refreshCacheIndex]);
+
+  const handleChangeCacheTtl = useCallback(
+    (nextTtl: CacheTtlOption) => {
+      setCacheTtl(nextTtl);
+      setCacheTtlSetting(nextTtl);
+      refreshCacheIndex();
+    },
+    [refreshCacheIndex],
+  );
+
+  const handleClearCache = useCallback(async () => {
+    await clearDomainCache();
+    refreshCacheIndex();
+    setIsReportFromCache(false);
+    setReportCachedAt(null);
+    setToast("Cleared cached domain reports");
+    setTimeout(() => {
+      setToast((prev) => (prev === "Cleared cached domain reports" ? null : prev));
+    }, 2400);
+  }, [refreshCacheIndex]);
 
   const notify = useCallback((message: string) => {
     setToast(message);
@@ -237,20 +336,82 @@ export function App() {
   }, []);
 
   const runLookup = useCallback(
-    async (overrideDomain?: string) => {
+    async (
+      overrideDomain?: string,
+      options?: {
+        forceRefresh?: boolean;
+        dkimSelectorsOverride?: string;
+        fromNavigation?: boolean;
+      },
+    ) => {
       const targetDomain = (overrideDomain ?? domain).trim();
       if (!targetDomain) return;
+
+      const normalized = normalizeDomainForCache(targetDomain);
+      const effectiveDkimInput =
+        options?.dkimSelectorsOverride ?? dkimSelectorsInput;
+      const dkimSelectors = effectiveDkimInput
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      const optionsKey = buildOptionsKey({
+        record_types: recordTypes,
+        resolvers,
+        custom_resolver: customResolver.trim() || null,
+        dkim_selectors: dkimSelectors,
+      });
+
+      const isSubmittingActiveDomain =
+        !overrideDomain &&
+        Boolean(report && normalizeDomainForCache(report.domain) === normalized);
+
+      const shouldForceRefresh =
+        Boolean(options?.forceRefresh) ||
+        (isSubmittingActiveDomain && options?.forceRefresh !== false);
+
+      const existingCached = normalized ? getCachedDomain(normalized) : null;
+
+      if (
+        !shouldForceRefresh &&
+        cacheTtl !== "off" &&
+        existingCached &&
+        isCacheFresh(existingCached, cacheTtl) &&
+        (Boolean(options?.fromNavigation) ||
+          existingCached.optionsKey === optionsKey)
+      ) {
+        setError(null);
+        setReport(existingCached.report);
+        setDomain(existingCached.report.domain);
+        setActiveSubResults(existingCached.subResults ?? {});
+        setIsReportFromCache(true);
+        setReportCachedAt(existingCached.cachedAt);
+        setReportChanges([]);
+
+        const firstOk =
+          existingCached.report.resolvers.find((r) => r.status === "ok") ??
+          existingCached.report.resolvers[0];
+        if (firstOk) {
+          setSelectedResolverId(firstOk.id);
+        }
+        refreshCacheIndex();
+        notify(
+          `Loaded ${existingCached.report.domain} from cache (${formatRelativeAge(existingCached.cachedAt)})`,
+        );
+        return;
+      }
+
+      const previousReport =
+        existingCached?.report ??
+        (report && normalizeDomainForCache(report.domain) === normalized
+          ? report
+          : null);
 
       setLoading(true);
       setQueryDomainLabel(targetDomain);
       setQueryStartedAt(Date.now());
       setProgressStages(INITIAL_PROGRESS_STAGES.map((s) => ({ ...s })));
       setError(null);
-
-      const dkimSelectors = dkimSelectorsInput
-        .split(",")
-        .map((s) => s.trim())
-        .filter(Boolean);
 
       try {
         const res = await queryDomain({
@@ -261,8 +422,19 @@ export function App() {
           dkim_selectors: dkimSelectors,
         });
 
+        const savedEntry = await saveCachedReport(res, optionsKey);
+        const changes = previousReport
+          ? computeReportDiff(previousReport, res)
+          : [];
+
         setReport(res);
         setDomain(res.domain);
+        setActiveSubResults(savedEntry.subResults ?? {});
+        setIsReportFromCache(false);
+        setReportCachedAt(savedEntry.cachedAt);
+        setReportChanges(changes);
+        refreshCacheIndex();
+
         const firstOk =
           res.resolvers.find((r) => r.status === "ok") ?? res.resolvers[0];
         if (firstOk) {
@@ -315,8 +487,126 @@ export function App() {
         setQueryStartedAt(null);
       }
     },
-    [customResolver, dkimSelectorsInput, domain, recordTypes, resolvers],
+    [
+      cacheTtl,
+      customResolver,
+      dkimSelectorsInput,
+      domain,
+      notify,
+      recordTypes,
+      refreshCacheIndex,
+      report,
+      resolvers,
+    ],
   );
+
+  const handleRecheckDkim = useCallback(
+    async (overrideDomain?: string, overrideSelectorsStr?: string) => {
+      const target = (overrideDomain ?? report?.domain ?? "").trim();
+      if (!target) return;
+
+      const selectors = (overrideSelectorsStr ?? dkimSelectorsInput)
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      setRecheckingDkim(true);
+      try {
+        const updatedSecurity = await recheckSecurity(target, selectors);
+        setReport((prev) =>
+          prev &&
+          normalizeDomainForCache(prev.domain) === normalizeDomainForCache(target)
+            ? { ...prev, security: updatedSecurity }
+            : prev,
+        );
+        await updateCachedSecurity(target, updatedSecurity);
+        refreshCacheIndex();
+        notify(
+          selectors.length > 0
+            ? `Rechecked DKIM (${selectors.join(", ")}) for ${target}`
+            : `Rechecked email security for ${target}`,
+        );
+      } catch (err) {
+        notify(`Security recheck failed: ${String(err)}`);
+      } finally {
+        setRecheckingDkim(false);
+      }
+    },
+    [dkimSelectorsInput, notify, refreshCacheIndex, report?.domain],
+  );
+
+  const handleInspectFromUtility = useCallback(
+    (d: string, opts?: { dkimSelectors?: string }) => {
+      const normalized = normalizeDomainForCache(d);
+      setWorkspace("inspector");
+      setDomain(d);
+
+      if (opts?.dkimSelectors) {
+        setDkimSelectorsInput(opts.dkimSelectors);
+        setActiveTab("security");
+
+        const existingCached = normalized ? getCachedDomain(normalized) : null;
+        if (
+          report &&
+          normalizeDomainForCache(report.domain) === normalized
+        ) {
+          void handleRecheckDkim(report.domain, opts.dkimSelectors);
+          return;
+        }
+        if (existingCached && cacheTtl !== "off" && isCacheFresh(existingCached, cacheTtl)) {
+          setError(null);
+          setReport(existingCached.report);
+          setDomain(existingCached.report.domain);
+          setActiveSubResults(existingCached.subResults ?? {});
+          setIsReportFromCache(true);
+          setReportCachedAt(existingCached.cachedAt);
+          setReportChanges([]);
+          const firstOk =
+            existingCached.report.resolvers.find((r) => r.status === "ok") ??
+            existingCached.report.resolvers[0];
+          if (firstOk) setSelectedResolverId(firstOk.id);
+          void handleRecheckDkim(existingCached.report.domain, opts.dkimSelectors);
+          return;
+        }
+
+        void runLookup(d, { dkimSelectorsOverride: opts.dkimSelectors });
+        return;
+      }
+
+      setActiveTab("records");
+      void runLookup(d, { fromNavigation: true });
+    },
+    [cacheTtl, handleRecheckDkim, report, runLookup],
+  );
+
+  const freshnessInfo = useMemo(() => {
+    if (!report) return null;
+    const entry = getCachedDomain(report.domain);
+    const ts = reportCachedAt ?? entry?.cachedAt ?? Date.parse(report.queried_at);
+    const ageLabel = Number.isFinite(ts) ? formatRelativeAge(ts) : "just now";
+    const isStale =
+      cacheTtl !== "off" && entry ? !isCacheFresh(entry, cacheTtl) : false;
+
+    if (isStale) {
+      return {
+        label: `Stale · ${ageLabel}`,
+        tone: "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300",
+        kind: "stale" as const,
+      };
+    }
+    if (isReportFromCache) {
+      return {
+        label: `Cached · ${ageLabel}`,
+        tone: "border-emerald-500/40 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+        kind: "cached" as const,
+      };
+    }
+    return {
+      label: `Live · ${ageLabel}`,
+      tone: "border-sky-500/40 bg-sky-500/15 text-sky-700 dark:text-sky-300",
+      kind: "live" as const,
+    };
+  }, [report, reportCachedAt, cacheTtl, isReportFromCache, cachedDomainsMap]);
 
   const zoneOutput = useMemo(
     () => (report ? formatAsZoneFile(report, selectedResolverId) : ""),
@@ -329,15 +619,21 @@ export function App() {
         history={history}
         collapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
-        onSelectDomain={(d) => {
+        onSelectDomain={(d, opts) => {
           setWorkspace("inspector");
           setDomain(d);
-          void runLookup(d);
+          void runLookup(d, {
+            forceRefresh: opts?.forceRefresh,
+            fromNavigation: !opts?.forceRefresh,
+          });
         }}
         onClearHistory={() => {
           setHistory([]);
           localStorage.removeItem(HISTORY_KEY);
         }}
+        cachedDomains={cachedDomainsMap}
+        cacheCount={cacheCount}
+        onClearCache={() => void handleClearCache()}
         activeDomain={report?.domain}
       />
 
@@ -444,7 +740,7 @@ export function App() {
                   setWorkspace("inspector");
                   setDomain(d);
                   setActiveTab("health");
-                  void runLookup(d);
+                  void runLookup(d, { fromNavigation: true });
                 }}
                 onNotify={notify}
               />
@@ -456,7 +752,7 @@ export function App() {
                   setWorkspace("inspector");
                   setDomain(d);
                   setActiveTab("records");
-                  void runLookup(d);
+                  void runLookup(d, { fromNavigation: true });
                 }}
                 onNotify={notify}
               />
@@ -471,12 +767,8 @@ export function App() {
             {workspace === "utilities" && (
               <UtilitiesPanel
                 defaultDomain={report?.domain || domain}
-                onInspectDomain={(d) => {
-                  setWorkspace("inspector");
-                  setDomain(d);
-                  setActiveTab("records");
-                  void runLookup(d);
-                }}
+                currentReport={report}
+                onInspectDomain={handleInspectFromUtility}
                 onNotify={notify}
               />
             )}
@@ -495,6 +787,7 @@ export function App() {
                   dkimSelectorsInput={dkimSelectorsInput}
                   onDkimSelectorsInputChange={setDkimSelectorsInput}
                   loading={loading}
+                  activeDomain={report?.domain}
                   onSubmit={runLookup}
                   inputRef={domainInputRef}
                 />
@@ -769,7 +1062,7 @@ export function App() {
                         </button>
                       </div>
 
-                      <div className="flex items-center gap-2 font-mono text-xs text-ink-muted">
+                      <div className="flex flex-wrap items-center gap-2 font-mono text-xs text-ink-muted">
                         <button
                           type="button"
                           onClick={toggleWatchCurrent}
@@ -788,8 +1081,128 @@ export function App() {
                             {report.domain}
                           </span>
                         </span>
+
+                        {freshnessInfo && (
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-sans text-[11px] font-medium ${freshnessInfo.tone}`}
+                            title={
+                              freshnessInfo.kind === "cached"
+                                ? "Loaded instantly from local domain cache"
+                                : freshnessInfo.kind === "stale"
+                                  ? "Cached result exceeds TTL — click Refresh for live data"
+                                  : "Fresh live DNS lookup"
+                            }
+                          >
+                            {freshnessInfo.kind === "cached" ? (
+                              <Zap className="h-3 w-3" />
+                            ) : (
+                              <Clock className="h-3 w-3" />
+                            )}
+                            {freshnessInfo.label}
+                          </span>
+                        )}
+
+                        <button
+                          type="button"
+                          disabled={loading}
+                          onClick={() =>
+                            void runLookup(report.domain, { forceRefresh: true })
+                          }
+                          title="Run fresh live lookup bypassing cache"
+                          className="inline-flex items-center gap-1 rounded-md border border-line-strong bg-surface-alt px-2 py-1 font-sans text-[11px] font-medium text-ink-secondary transition hover:border-sky-500/50 hover:text-sky-600 disabled:opacity-50 dark:hover:text-sky-300"
+                        >
+                          <RefreshCw
+                            className={`h-3 w-3 ${loading ? "animate-spin" : ""}`}
+                          />
+                          Refresh
+                        </button>
+
+                        <label
+                          className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-alt px-2 py-0.5 font-sans text-[11px] text-ink-muted"
+                          title="Local result cache TTL"
+                        >
+                          <span>TTL</span>
+                          <select
+                            value={cacheTtl}
+                            onChange={(e) =>
+                              handleChangeCacheTtl(e.target.value as CacheTtlOption)
+                            }
+                            aria-label="Cache TTL"
+                            className="bg-transparent font-mono text-[11px] font-medium text-ink focus:outline-none"
+                          >
+                            {CACHE_TTL_OPTIONS.map((opt) => (
+                              <option key={opt.id} value={opt.id}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        {cacheCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => void handleClearCache()}
+                            title={`Clear cache (${cacheCount} cached)`}
+                            className="inline-flex items-center gap-1 rounded-md border border-line bg-surface-alt px-1.5 py-1 font-sans text-[11px] text-ink-muted transition hover:border-rose-500/40 hover:text-rose-600 dark:hover:text-rose-300"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        )}
                       </div>
                     </div>
+
+                    {reportChanges.length > 0 && (
+                      <div className="rounded-xl border border-amber-500/35 bg-amber-500/10 p-3.5 text-xs">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 font-semibold text-amber-900 dark:text-amber-200">
+                            <Sparkles className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+                            <span>
+                              Changes since previous query ({reportChanges.length})
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setReportChanges([])}
+                            title="Dismiss changes summary"
+                            className="rounded p-1 text-amber-800/80 transition hover:bg-amber-500/15 hover:text-amber-950 dark:text-amber-300 dark:hover:text-amber-100"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                        <div className="mt-2.5 grid grid-cols-1 gap-1.5 md:grid-cols-2">
+                          {reportChanges.map((chg, idx) => {
+                            const sevTone =
+                              chg.severity === "good"
+                                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200"
+                                : chg.severity === "warn"
+                                  ? "border-rose-500/30 bg-rose-500/10 text-rose-800 dark:text-rose-200"
+                                  : "border-sky-500/30 bg-sky-500/10 text-sky-800 dark:text-sky-200";
+                            return (
+                              <div
+                                key={`${chg.category}-${chg.label}-${idx}`}
+                                className="flex flex-wrap items-center gap-1.5 rounded-lg border border-line bg-surface/90 px-2.5 py-1.5 text-[11px]"
+                              >
+                                <span
+                                  className={`rounded border px-1.5 py-0.2 font-mono text-[10px] font-semibold ${sevTone}`}
+                                >
+                                  {chg.category}
+                                </span>
+                                <span className="font-medium text-ink">
+                                  {chg.label}:
+                                </span>
+                                <span className="truncate font-mono text-ink-muted line-through">
+                                  {chg.before}
+                                </span>
+                                <ArrowRight className="h-3 w-3 shrink-0 text-ink-muted" />
+                                <span className="truncate font-mono font-medium text-ink">
+                                  {chg.after}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
 
                     {activeTab === "records" && (
                       <RecordsTable
@@ -805,7 +1218,23 @@ export function App() {
                     )}
 
                     {activeTab === "trace" && (
-                      <DnsTracePanel domain={report.domain} onNotify={notify} />
+                      <DnsTracePanel
+                        domain={report.domain}
+                        initialTraces={activeSubResults.dnsTrace}
+                        onTraceResult={(recordType, traceRes) => {
+                          setActiveSubResults((prev) => ({
+                            ...prev,
+                            dnsTrace: {
+                              ...(prev.dnsTrace ?? {}),
+                              [recordType]: traceRes,
+                            },
+                          }));
+                          void saveCachedSubResult(report.domain, "dnsTrace", {
+                            [recordType]: traceRes,
+                          });
+                        }}
+                        onNotify={notify}
+                      />
                     )}
 
                     {activeTab === "security" && (
@@ -814,8 +1243,21 @@ export function App() {
                         security={report.security}
                         dkimSelectorsInput={dkimSelectorsInput}
                         onDkimSelectorsInputChange={setDkimSelectorsInput}
-                        onRecheckDkim={() => void runLookup(report.domain)}
+                        onRecheckDkim={() => void handleRecheckDkim()}
                         loading={loading}
+                        recheckingDkim={recheckingDkim}
+                        initialSmtpReport={activeSubResults.smtpProbe}
+                        onSmtpResult={(smtpRes) => {
+                          setActiveSubResults((prev) => ({
+                            ...prev,
+                            smtpProbe: smtpRes,
+                          }));
+                          void saveCachedSubResult(
+                            report.domain,
+                            "smtpProbe",
+                            smtpRes,
+                          );
+                        }}
                         onNotify={notify}
                       />
                     )}
@@ -825,6 +1267,18 @@ export function App() {
                         <TlsPanel
                           tls={report.tls}
                           defaultHost={report.domain}
+                          initialCtHistory={activeSubResults.ctHistory}
+                          onCtHistoryResult={(ctRes) => {
+                            setActiveSubResults((prev) => ({
+                              ...prev,
+                              ctHistory: ctRes,
+                            }));
+                            void saveCachedSubResult(
+                              report.domain,
+                              "ctHistory",
+                              ctRes,
+                            );
+                          }}
                           onNotify={notify}
                         />
                       ) : (
@@ -832,7 +1286,9 @@ export function App() {
                           <p>SSL / TLS data is not in this cached result.</p>
                           <button
                             type="button"
-                            onClick={() => void runLookup(report.domain)}
+                            onClick={() =>
+                              void runLookup(report.domain, { forceRefresh: true })
+                            }
                             className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
                           >
                             Re-run Lookup
@@ -845,6 +1301,19 @@ export function App() {
                         <NetworkPanel
                           network={report.network}
                           defaultTarget={report.domain}
+                          initialTraceroutes={activeSubResults.traceroute}
+                          onTracerouteResult={(target, trRes) => {
+                            setActiveSubResults((prev) => ({
+                              ...prev,
+                              traceroute: {
+                                ...(prev.traceroute ?? {}),
+                                [target]: trRes,
+                              },
+                            }));
+                            void saveCachedSubResult(report.domain, "traceroute", {
+                              [target]: trRes,
+                            });
+                          }}
                           onNotify={notify}
                         />
                       ) : (
@@ -852,7 +1321,9 @@ export function App() {
                           <p>Network / ASN data is not in this cached result.</p>
                           <button
                             type="button"
-                            onClick={() => void runLookup(report.domain)}
+                            onClick={() =>
+                              void runLookup(report.domain, { forceRefresh: true })
+                            }
                             className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
                           >
                             Re-run Lookup
@@ -871,7 +1342,9 @@ export function App() {
                           <p>Redirect &amp; Waterfall data is not in this cached result.</p>
                           <button
                             type="button"
-                            onClick={() => void runLookup(report.domain)}
+                            onClick={() =>
+                              void runLookup(report.domain, { forceRefresh: true })
+                            }
                             className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
                           >
                             Re-run Lookup
@@ -891,7 +1364,9 @@ export function App() {
                           <p>Domain Health data is not in this cached result.</p>
                           <button
                             type="button"
-                            onClick={() => void runLookup(report.domain)}
+                            onClick={() =>
+                              void runLookup(report.domain, { forceRefresh: true })
+                            }
                             className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
                           >
                             Re-run Lookup
@@ -906,7 +1381,7 @@ export function App() {
                           onInspectSubdomain={(sub) => {
                             setDomain(sub);
                             setActiveTab("records");
-                            void runLookup(sub);
+                            void runLookup(sub, { fromNavigation: true });
                           }}
                           onNotify={notify}
                         />
@@ -915,7 +1390,9 @@ export function App() {
                           <p>Subdomain data is not in this cached result.</p>
                           <button
                             type="button"
-                            onClick={() => void runLookup(report.domain)}
+                            onClick={() =>
+                              void runLookup(report.domain, { forceRefresh: true })
+                            }
                             className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
                           >
                             Re-run Lookup
@@ -926,10 +1403,22 @@ export function App() {
                     {activeTab === "typosquat" && (
                       <TyposquatPanel
                         domain={report.domain}
+                        initialReport={activeSubResults.typosquats}
+                        onScanResult={(typoRes) => {
+                          setActiveSubResults((prev) => ({
+                            ...prev,
+                            typosquats: typoRes,
+                          }));
+                          void saveCachedSubResult(
+                            report.domain,
+                            "typosquats",
+                            typoRes,
+                          );
+                        }}
                         onInspectDomain={(d) => {
                           setDomain(d);
                           setActiveTab("records");
-                          void runLookup(d);
+                          void runLookup(d, { fromNavigation: true });
                         }}
                         onNotify={notify}
                       />
@@ -943,7 +1432,9 @@ export function App() {
                           <p>Port scan data is not in this cached result.</p>
                           <button
                             type="button"
-                            onClick={() => void runLookup(report.domain)}
+                            onClick={() =>
+                              void runLookup(report.domain, { forceRefresh: true })
+                            }
                             className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
                           >
                             Re-run Lookup
@@ -963,7 +1454,9 @@ export function App() {
                           <p>WHOIS data is not in this cached result.</p>
                           <button
                             type="button"
-                            onClick={() => void runLookup(report.domain)}
+                            onClick={() =>
+                              void runLookup(report.domain, { forceRefresh: true })
+                            }
                             className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
                           >
                             Re-run Lookup
@@ -979,7 +1472,9 @@ export function App() {
                           <p>Website stack data is not in this cached result.</p>
                           <button
                             type="button"
-                            onClick={() => void runLookup(report.domain)}
+                            onClick={() =>
+                              void runLookup(report.domain, { forceRefresh: true })
+                            }
                             className="mt-3 rounded-lg bg-sky-600 px-3 py-1.5 font-semibold text-white hover:bg-sky-500 dark:bg-sky-500 dark:text-slate-950"
                           >
                             Re-run Lookup

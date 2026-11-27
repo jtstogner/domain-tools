@@ -813,3 +813,84 @@ pub struct DnsQueryReport {
     pub subdomains: SubdomainDiscoveryReport,
     pub ports: PortScanReport,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StandaloneDnsblReport {
+    pub target: String,
+    /// "ip" | "domain"
+    pub target_kind: String,
+    pub resolved_ips: Vec<String>,
+    pub checked_count: usize,
+    pub listed_count: usize,
+    pub blocked_count: usize,
+    pub latency_ms: u64,
+    pub entries: Vec<BlacklistEntry>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TldAvailabilityItem {
+    pub domain: String,
+    pub tld: String,
+    /// "available" | "registered" | "unknown"
+    pub status: String,
+    pub has_dns: bool,
+    pub registrar: Option<String>,
+    pub expiry_date: Option<String>,
+    pub latency_ms: u64,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TldAvailabilityReport {
+    pub base_name: String,
+    pub checked_count: usize,
+    pub available_count: usize,
+    pub registered_count: usize,
+    pub latency_ms: u64,
+    pub items: Vec<TldAvailabilityItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RobotsFetchResult {
+    pub domain: String,
+    pub url: String,
+    pub http_status: Option<u16>,
+    pub found: bool,
+    pub content: String,
+    pub sitemaps: Vec<String>,
+    pub latency_ms: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PemDecodedItem {
+    /// "CERTIFICATE" | "CSR"
+    pub kind: String,
+    pub subject: String,
+    pub common_name: Option<String>,
+    pub issuer: Option<String>,
+    pub issuer_org: Option<String>,
+    pub sans: Vec<String>,
+    pub not_before: Option<String>,
+    pub not_after: Option<String>,
+    pub days_remaining: Option<i64>,
+    pub serial_hex: Option<String>,
+    pub signature_algorithm: String,
+    pub public_key_algorithm: String,
+    pub public_key_bits: Option<u32>,
+    pub sha256_fingerprint: String,
+    pub spki_sha256: Option<String>,
+    pub is_ca: bool,
+    pub is_self_signed: bool,
+    pub tlsa_3_1_1: Option<String>,
+    pub tlsa_3_0_1: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PemDecodeReport {
+    pub items: Vec<PemDecodedItem>,
+    pub chain_order_valid: Option<bool>,
+    pub warnings: Vec<String>,
+    pub error: Option<String>,
+}

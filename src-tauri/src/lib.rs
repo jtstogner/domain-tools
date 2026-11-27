@@ -19,7 +19,12 @@ pub fn run() {
             commands::fetch_ct_history,
             commands::scan_typosquats,
             commands::run_traceroute,
-            commands::save_export_file
+            commands::save_export_file,
+            commands::recheck_security,
+            commands::check_dnsbl,
+            commands::check_tld_availability,
+            commands::fetch_robots_txt,
+            commands::decode_pem
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

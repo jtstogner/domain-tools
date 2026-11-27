@@ -36,11 +36,77 @@ export const CAA_PROVIDERS: CaaProviderPreset[] = [
 
 export interface BuiltDnsRecord {
   host: string;
-  type: "TXT" | "CAA" | "SRV";
+  type: "TXT" | "CAA" | "SRV" | "TLSA";
   value: string;
   bindLine: string;
   warnings: string[];
   lookupCount?: number;
+}
+
+export interface TxtSplitResult {
+  chunks: string[];
+  bindQuoted: string;
+  cloudflareQuoted: string;
+  route53Quoted: string;
+  totalBytes: number;
+  needsSplit: boolean;
+}
+
+function escapeTxtQuotes(str: string): string {
+  return str.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+export function splitTxtChunks(value: string, maxBytes = 255): TxtSplitResult {
+  const limit = Math.max(4, Math.floor(maxBytes));
+  const encoder = new TextEncoder();
+  const totalBytes = encoder.encode(value).length;
+
+  if (!value) {
+    return {
+      chunks: [""],
+      bindQuoted: '""',
+      cloudflareQuoted: '""',
+      route53Quoted: '""',
+      totalBytes: 0,
+      needsSplit: false,
+    };
+  }
+
+  const chunks: string[] = [];
+  let current = "";
+  let currentBytes = 0;
+
+  for (const ch of value) {
+    const chBytes = encoder.encode(ch).length;
+    if (currentBytes + chBytes > limit && current.length > 0) {
+      chunks.push(current);
+      current = ch;
+      currentBytes = chBytes;
+    } else {
+      current += ch;
+      currentBytes += chBytes;
+    }
+  }
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+
+  const quotedChunks = chunks.map((c) => `"${escapeTxtQuotes(c)}"`);
+  const bindQuoted =
+    quotedChunks.length > 1
+      ? `(\n${quotedChunks.map((q) => `  ${q}`).join("\n")}\n)`
+      : quotedChunks[0];
+  const cloudflareQuoted = quotedChunks.join(" ");
+  const route53Quoted = quotedChunks.join(" ");
+
+  return {
+    chunks,
+    bindQuoted,
+    cloudflareQuoted,
+    route53Quoted,
+    totalBytes,
+    needsSplit: totalBytes > limit,
+  };
 }
 
 export function buildSpfRecord(opts: {
@@ -258,21 +324,534 @@ export function buildSrvRecord(opts: {
   };
 }
 
+export interface MtaStsBuildResult {
+  mtaStsDns: BuiltDnsRecord;
+  tlsRptDns: BuiltDnsRecord | null;
+  policyFileUrl: string;
+  policyFileBody: string;
+  warnings: string[];
+}
+
+export function buildMtaStsRecords(opts: {
+  domain: string;
+  policyId: string;
+  mode: "testing" | "enforce" | "none";
+  maxAge: number;
+  mxPatterns: string[];
+  tlsRptEmail: string;
+}): MtaStsBuildResult {
+  const cleanDomain = (opts.domain || "example.com").trim().replace(/\.$/, "");
+  const warnings: string[] = [];
+
+  const rawId = opts.policyId.trim();
+  const sanitizedId = rawId.replace(/[^a-zA-Z0-9]/g, "");
+  const now = new Date();
+  const defaultId = [
+    now.getUTCFullYear(),
+    String(now.getUTCMonth() + 1).padStart(2, "0"),
+    String(now.getUTCDate()).padStart(2, "0"),
+    String(now.getUTCHours()).padStart(2, "0"),
+    String(now.getUTCMinutes()).padStart(2, "0"),
+    String(now.getUTCSeconds()).padStart(2, "0"),
+  ].join("");
+  const policyId = sanitizedId || defaultId;
+
+  if (rawId && rawId !== sanitizedId) {
+    warnings.push("Policy ID was stripped to alphanumeric characters only per RFC 8461.");
+  }
+  if (policyId.length > 32) {
+    warnings.push("RFC 8461 recommends policy IDs of 32 alphanumeric characters or fewer.");
+  }
+
+  const maxAge = Math.max(0, Math.round(opts.maxAge));
+  if (maxAge > 31557600) {
+    warnings.push("max_age exceeds RFC 8461 maximum of 31557600 seconds (~1 year).");
+  }
+  if (opts.mode === "enforce" && maxAge < 86400) {
+    warnings.push("For 'enforce' mode, RFC 8461 recommends max_age >= 86400 (1 day; typically 604800 / 1 week).");
+  }
+  if (opts.mode === "testing") {
+    warnings.push("'testing' mode collects TLS failure reports without rejecting unencrypted mail; switch to 'enforce' after verifying reports.");
+  }
+
+  const cleanedMx = opts.mxPatterns
+    .map((m) => m.trim().replace(/\.$/, ""))
+    .filter(Boolean);
+  if (opts.mode !== "none" && cleanedMx.length === 0) {
+    warnings.push("At least one MX hostname pattern (e.g. *.mail.protection.outlook.com or mail.example.com) is required for testing/enforce mode.");
+  }
+
+  const mtaStsValue = `v=STSv1; id=${policyId}`;
+  const mtaStsDns: BuiltDnsRecord = {
+    host: `_mta-sts.${cleanDomain}`,
+    type: "TXT",
+    value: mtaStsValue,
+    bindLine: `_mta-sts 3600 IN TXT "${mtaStsValue}"`,
+    warnings: [],
+  };
+
+  const ruaTargets = opts.tlsRptEmail
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => {
+      const lower = s.toLowerCase();
+      if (lower.startsWith("mailto:") || lower.startsWith("https://")) {
+        return s;
+      }
+      return `mailto:${s}`;
+    });
+
+  let tlsRptDns: BuiltDnsRecord | null = null;
+  if (ruaTargets.length > 0) {
+    const tlsRptValue = `v=TLSRPTv1; rua=${ruaTargets.join(",")}`;
+    tlsRptDns = {
+      host: `_smtp._tls.${cleanDomain}`,
+      type: "TXT",
+      value: tlsRptValue,
+      bindLine: `_smtp._tls 3600 IN TXT "${tlsRptValue}"`,
+      warnings: [],
+    };
+  } else {
+    warnings.push("Consider configuring an SMTP TLS-RPT (_smtp._tls) email/HTTPS endpoint to receive TLS failure reports.");
+  }
+
+  const policyLines = [
+    "version: STSv1",
+    `mode: ${opts.mode}`,
+    ...cleanedMx.map((mx) => `mx: ${mx}`),
+    `max_age: ${maxAge}`,
+  ];
+
+  return {
+    mtaStsDns,
+    tlsRptDns,
+    policyFileUrl: `https://mta-sts.${cleanDomain}/.well-known/mta-sts.txt`,
+    policyFileBody: `${policyLines.join("\n")}\n`,
+    warnings,
+  };
+}
+
+export function buildBimiRecord(opts: {
+  domain: string;
+  selector: string;
+  logoUrl: string;
+  authorityUrl: string;
+}): BuiltDnsRecord {
+  const cleanDomain = (opts.domain || "example.com").trim().replace(/\.$/, "");
+  const cleanSelector = (opts.selector || "default").trim() || "default";
+  const logo = opts.logoUrl.trim();
+  const authority = opts.authorityUrl.trim();
+  const warnings: string[] = [];
+
+  if (!logo) {
+    warnings.push("Missing SVG logo URL ('l='); BIMI requires an HTTPS URL pointing to an SVG Tiny P/S logo.");
+  } else {
+    if (!logo.toLowerCase().startsWith("https://")) {
+      warnings.push("BIMI logo URL ('l=') must use HTTPS.");
+    }
+    if (!logo.toLowerCase().includes(".svg")) {
+      warnings.push("BIMI logo URL should point to an SVG Tiny Portable/Secure (.svg) file.");
+    }
+  }
+
+  if (!authority) {
+    warnings.push("No VMC/CMC authority certificate URL ('a=') specified — major inbox providers (Gmail, Apple Mail) require a Verified/Common Mark Certificate.");
+  } else {
+    if (!authority.toLowerCase().startsWith("https://")) {
+      warnings.push("BIMI authority URL ('a=') must use HTTPS.");
+    }
+    if (!authority.toLowerCase().endsWith(".pem")) {
+      warnings.push("BIMI VMC/CMC certificate URL ('a=') typically ends with .pem.");
+    }
+  }
+
+  const parts = ["v=BIMI1", `l=${logo}`];
+  if (authority) {
+    parts.push(`a=${authority}`);
+  } else {
+    parts.push("a=");
+  }
+
+  const value = parts.join("; ");
+  const host = `${cleanSelector}._bimi.${cleanDomain}`;
+
+  return {
+    host,
+    type: "TXT",
+    value,
+    bindLine: `${cleanSelector}._bimi 3600 IN TXT "${value}"`,
+    warnings,
+  };
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const slice = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...slice);
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const cleaned = b64.replace(/\s+/g, "");
+  const binary = atob(cleaned);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    out[i] = binary.charCodeAt(i);
+  }
+  return out;
+}
+
+function formatPem(label: string, bytes: Uint8Array): string {
+  const b64 = bytesToBase64(bytes);
+  const lines = b64.match(/.{1,64}/g) ?? [b64];
+  return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----`;
+}
+
+export interface DkimKeypairResult {
+  host: string;
+  privateKeyPem: string;
+  publicKeyBase64: string;
+  txtValue: string;
+  bindLine: string;
+  chunks: string[];
+  warnings: string[];
+}
+
+export async function generateDkimKeypair(opts: {
+  domain: string;
+  selector: string;
+  algorithm: "rsa2048" | "ed25519";
+}): Promise<DkimKeypairResult> {
+  if (typeof crypto === "undefined" || !crypto.subtle) {
+    throw new Error("Web Crypto API (crypto.subtle) is unavailable in this environment.");
+  }
+
+  const cleanDomain = (opts.domain || "example.com").trim().replace(/\.$/, "");
+  const cleanSelector = (opts.selector || "selector1").trim() || "selector1";
+  const warnings: string[] = [];
+
+  let actualAlg: "rsa2048" | "ed25519" = opts.algorithm;
+  let keyPair: CryptoKeyPair;
+
+  if (opts.algorithm === "ed25519") {
+    try {
+      keyPair = (await crypto.subtle.generateKey(
+        { name: "Ed25519" } as AlgorithmIdentifier,
+        true,
+        ["sign", "verify"],
+      )) as CryptoKeyPair;
+    } catch {
+      actualAlg = "rsa2048";
+      warnings.push(
+        "Ed25519 Web Crypto key generation is not supported by this browser/WebView; fell back to RSA-2048.",
+      );
+      keyPair = (await crypto.subtle.generateKey(
+        {
+          name: "RSASSA-PKCS1-v1_5",
+          modulusLength: 2048,
+          publicExponent: new Uint8Array([1, 0, 1]),
+          hash: "SHA-256",
+        },
+        true,
+        ["sign", "verify"],
+      )) as CryptoKeyPair;
+    }
+  } else {
+    keyPair = (await crypto.subtle.generateKey(
+      {
+        name: "RSASSA-PKCS1-v1_5",
+        modulusLength: 2048,
+        publicExponent: new Uint8Array([1, 0, 1]),
+        hash: "SHA-256",
+      },
+      true,
+      ["sign", "verify"],
+    )) as CryptoKeyPair;
+  }
+
+  const pkcs8Buf = await crypto.subtle.exportKey("pkcs8", keyPair.privateKey);
+  const privateKeyPem = formatPem("PRIVATE KEY", new Uint8Array(pkcs8Buf));
+
+  let publicKeyBase64: string;
+  let keyTag: string;
+
+  if (actualAlg === "ed25519") {
+    keyTag = "ed25519";
+    // RFC 8463: Ed25519 DKIM p= tag uses the raw 32-byte public key.
+    try {
+      const rawBuf = await crypto.subtle.exportKey("raw", keyPair.publicKey);
+      publicKeyBase64 = bytesToBase64(new Uint8Array(rawBuf));
+    } catch {
+      const spkiBuf = await crypto.subtle.exportKey("spki", keyPair.publicKey);
+      const spkiBytes = new Uint8Array(spkiBuf);
+      // Ed25519 SPKI is 44 bytes: 12-byte ASN.1 header + 32-byte raw key
+      const rawBytes = spkiBytes.length === 44 ? spkiBytes.subarray(12) : spkiBytes;
+      publicKeyBase64 = bytesToBase64(rawBytes);
+    }
+  } else {
+    keyTag = "rsa";
+    const spkiBuf = await crypto.subtle.exportKey("spki", keyPair.publicKey);
+    publicKeyBase64 = bytesToBase64(new Uint8Array(spkiBuf));
+  }
+
+  const txtValue = `v=DKIM1; k=${keyTag}; p=${publicKeyBase64}`;
+  const split = splitTxtChunks(txtValue, 255);
+  const host = `${cleanSelector}._domainkey.${cleanDomain}`;
+  const bindLine = `${cleanSelector}._domainkey 3600 IN TXT ${split.bindQuoted}`;
+
+  if (split.needsSplit) {
+    warnings.push(
+      `DKIM TXT record is ${split.totalBytes} bytes (>255); split into ${split.chunks.length} quoted chunks for BIND/DNS providers that enforce 255-byte string limits.`,
+    );
+  }
+  warnings.push(
+    "Keypair generated locally via Web Crypto — store the private key securely and never share it.",
+  );
+
+  return {
+    host,
+    privateKeyPem,
+    publicKeyBase64,
+    txtValue,
+    bindLine,
+    chunks: split.chunks,
+    warnings,
+  };
+}
+
+interface Asn1Node {
+  tag: number;
+  start: number;
+  headerLength: number;
+  contentStart: number;
+  contentLength: number;
+  end: number;
+}
+
+function readAsn1Node(der: Uint8Array, offset: number): Asn1Node {
+  if (offset >= der.length) {
+    throw new Error("Unexpected end of ASN.1 DER data.");
+  }
+  const tag = der[offset];
+  if (offset + 1 >= der.length) {
+    throw new Error("Truncated ASN.1 length byte.");
+  }
+  const firstLen = der[offset + 1];
+  let contentLength = 0;
+  let headerLength = 2;
+
+  if ((firstLen & 0x80) === 0) {
+    contentLength = firstLen;
+  } else {
+    const numOctets = firstLen & 0x7f;
+    if (numOctets === 0 || numOctets > 4) {
+      throw new Error("Unsupported indefinite or oversized ASN.1 DER length.");
+    }
+    if (offset + 2 + numOctets > der.length) {
+      throw new Error("Truncated multi-byte ASN.1 DER length.");
+    }
+    for (let i = 0; i < numOctets; i++) {
+      contentLength = (contentLength << 8) | der[offset + 2 + i];
+    }
+    headerLength = 2 + numOctets;
+  }
+
+  const contentStart = offset + headerLength;
+  const end = contentStart + contentLength;
+  if (end > der.length) {
+    throw new Error("ASN.1 DER element length exceeds buffer size.");
+  }
+
+  return { tag, start: offset, headerLength, contentStart, contentLength, end };
+}
+
+/**
+ * Extracts raw SubjectPublicKeyInfo (SPKI) DER bytes from an X.509 Certificate DER.
+ * Certificate ::= SEQUENCE { tbsCertificate TBSCertificate, ... }
+ * TBSCertificate ::= SEQUENCE {
+ *   version         [0] EXPLICIT Version DEFAULT v1,
+ *   serialNumber         CertificateSerialNumber,
+ *   signature            AlgorithmIdentifier,
+ *   issuer               Name,
+ *   validity             Validity,
+ *   subject              Name,
+ *   subjectPublicKeyInfo SubjectPublicKeyInfo,
+ *   ...
+ * }
+ */
+function extractSpkiFromCertDer(certDer: Uint8Array): Uint8Array {
+  const certSeq = readAsn1Node(certDer, 0);
+  if (certSeq.tag !== 0x30) {
+    throw new Error("Invalid X.509 certificate: outer tag is not SEQUENCE (0x30).");
+  }
+
+  const tbsSeq = readAsn1Node(certDer, certSeq.contentStart);
+  if (tbsSeq.tag !== 0x30) {
+    throw new Error("Invalid X.509 certificate: TBSCertificate is not SEQUENCE (0x30).");
+  }
+
+  let cursor = tbsSeq.contentStart;
+  const firstField = readAsn1Node(certDer, cursor);
+  // Optional explicit [0] version tag (0xa0)
+  if (firstField.tag === 0xa0) {
+    cursor = firstField.end;
+  }
+
+  // Skip: serialNumber, signature, issuer, validity, subject (5 fields)
+  for (let i = 0; i < 5; i++) {
+    const field = readAsn1Node(certDer, cursor);
+    cursor = field.end;
+  }
+
+  // Next field is SubjectPublicKeyInfo (SEQUENCE)
+  const spkiNode = readAsn1Node(certDer, cursor);
+  if (spkiNode.tag !== 0x30) {
+    throw new Error("Could not locate SubjectPublicKeyInfo SEQUENCE inside X.509 certificate.");
+  }
+
+  return certDer.subarray(spkiNode.start, spkiNode.end);
+}
+
+export interface TlsaComputeResult {
+  host: string;
+  value: string;
+  bindLine: string;
+  hashHex: string;
+  warnings: string[];
+}
+
+export async function computeTlsaFromPem(
+  pem: string,
+  opts: {
+    host: string;
+    port: number;
+    protocol: "tcp" | "udp";
+    usage: 0 | 1 | 2 | 3;
+    selector: 0 | 1;
+    matchingType: 1 | 2;
+  },
+): Promise<TlsaComputeResult> {
+  if (typeof crypto === "undefined" || !crypto.subtle) {
+    throw new Error("Web Crypto API (crypto.subtle) is unavailable in this environment.");
+  }
+
+  const pemMatch = pem.match(
+    /-----BEGIN (CERTIFICATE|PUBLIC KEY)-----([\s\S]*?)-----END \1-----/,
+  );
+  if (!pemMatch) {
+    throw new Error(
+      "No valid PEM CERTIFICATE (or PUBLIC KEY) block found. Paste a PEM certificate starting with -----BEGIN CERTIFICATE-----.",
+    );
+  }
+
+  const blockKind = pemMatch[1];
+  const derBytes = base64ToBytes(pemMatch[2]);
+  const warnings: string[] = [];
+
+  let payloadToHash: Uint8Array;
+  if (opts.selector === 0) {
+    if (blockKind !== "CERTIFICATE") {
+      throw new Error(
+        "Selector 0 (Full Certificate) requires a -----BEGIN CERTIFICATE----- block, not a bare PUBLIC KEY.",
+      );
+    }
+    payloadToHash = derBytes;
+  } else {
+    payloadToHash = blockKind === "PUBLIC KEY" ? derBytes : extractSpkiFromCertDer(derBytes);
+  }
+
+  const digestAlg = opts.matchingType === 1 ? "SHA-256" : "SHA-512";
+  // Copy into a standalone ArrayBuffer so TypeScript strict DOM BufferSource matches cleanly
+  const hashInput = new Uint8Array(payloadToHash.byteLength);
+  hashInput.set(payloadToHash);
+  const digestBuf = await crypto.subtle.digest(digestAlg, hashInput);
+  const hashHex = Array.from(new Uint8Array(digestBuf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+  const cleanHost = (opts.host || "mail.example.com").trim().replace(/\.$/, "");
+  const port = Math.round(opts.port);
+  if (port < 1 || port > 65535) {
+    warnings.push("Port must be between 1 and 65535.");
+  }
+
+  if (opts.usage === 3 && opts.selector === 1) {
+    // Best practice for Let's Encrypt / rotating certs with static keys
+  } else if (opts.selector === 0) {
+    warnings.push(
+      "Selector 0 (Full Certificate) changes on every renewal — prefer Selector 1 (SPKI) if you reuse keys, or automate TLSA rollover.",
+    );
+  }
+  warnings.push("DANE TLSA records require DNSSEC to be signed and validated on the domain.");
+
+  const recordHost = `_${port}._${opts.protocol}.${cleanHost}`;
+  const value = `${opts.usage} ${opts.selector} ${opts.matchingType} ${hashHex}`;
+  const bindLine = `_${port}._${opts.protocol} 3600 IN TLSA ${value}`;
+
+  return {
+    host: recordHost,
+    value,
+    bindLine,
+    hashHex,
+    warnings,
+  };
+}
+
 export interface LintFinding {
   level: "pass" | "warn" | "fail";
   message: string;
 }
 
+export type LintKindHint =
+  | "auto"
+  | "spf"
+  | "dmarc"
+  | "dkim"
+  | "caa"
+  | "mta-sts"
+  | "tls-rpt"
+  | "bimi"
+  | "tlsa";
+
+export type LintDetectedKind =
+  | "SPF"
+  | "DMARC"
+  | "DKIM"
+  | "CAA"
+  | "MTA-STS"
+  | "TLS-RPT"
+  | "BIMI"
+  | "TLSA"
+  | "Unknown";
+
 export interface LintReport {
-  detectedKind: "SPF" | "DMARC" | "DKIM" | "CAA" | "Unknown";
+  detectedKind: LintDetectedKind;
   status: "pass" | "warn" | "fail";
   checks: LintFinding[];
 }
 
-export function lintDnsRecord(
-  kindHint: "auto" | "spf" | "dmarc" | "dkim" | "caa",
-  rawInput: string,
-): LintReport {
+function parseSemicolonTags(trimmed: string, checks: LintFinding[]): Map<string, string> {
+  const tags = trimmed
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const map = new Map<string, string>();
+  for (const tag of tags) {
+    const idx = tag.indexOf("=");
+    if (idx === -1) {
+      checks.push({ level: "fail", message: `Malformed tag without '=': '${tag}'.` });
+    } else {
+      map.set(tag.slice(0, idx).trim().toLowerCase(), tag.slice(idx + 1).trim());
+    }
+  }
+  return map;
+}
+
+export function lintDnsRecord(kindHint: LintKindHint, rawInput: string): LintReport {
   const trimmed = rawInput.trim().replace(/^"(.*)"$/, "$1");
   if (!trimmed) {
     return {
@@ -283,17 +862,35 @@ export function lintDnsRecord(
   }
 
   const lower = trimmed.toLowerCase();
-  let detected: LintReport["detectedKind"] = "Unknown";
+  let detected: LintDetectedKind = "Unknown";
   if (kindHint !== "auto") {
-    detected = kindHint.toUpperCase() as LintReport["detectedKind"];
+    const mapKind: Record<Exclude<LintKindHint, "auto">, LintDetectedKind> = {
+      spf: "SPF",
+      dmarc: "DMARC",
+      dkim: "DKIM",
+      caa: "CAA",
+      "mta-sts": "MTA-STS",
+      "tls-rpt": "TLS-RPT",
+      bimi: "BIMI",
+      tlsa: "TLSA",
+    };
+    detected = mapKind[kindHint];
   } else if (lower.startsWith("v=spf1")) {
     detected = "SPF";
   } else if (lower.startsWith("v=dmarc1")) {
     detected = "DMARC";
+  } else if (lower.startsWith("v=stsv1")) {
+    detected = "MTA-STS";
+  } else if (lower.startsWith("v=tlsrptv1")) {
+    detected = "TLS-RPT";
+  } else if (lower.startsWith("v=bimi1")) {
+    detected = "BIMI";
   } else if (lower.startsWith("v=dkim1") || lower.includes("; p=")) {
     detected = "DKIM";
   } else if (/^\d+\s+(issue|issuewild|iodef)\s+/i.test(trimmed)) {
     detected = "CAA";
+  } else if (/^[0-3]\s+[01]\s+[0-2]\s+[0-9a-f]{16,}$/i.test(trimmed)) {
+    detected = "TLSA";
   }
 
   const checks: LintFinding[] = [];
@@ -359,7 +956,10 @@ export function lintDnsRecord(
 
     const lastToken = tokens[tokens.length - 1]?.toLowerCase() ?? "";
     if (lastToken === "+all" || lastToken === "all") {
-      checks.push({ level: "fail", message: "Dangerous '+all' mechanism authorizes ANY IP on the internet to spoof this domain." });
+      checks.push({
+        level: "fail",
+        message: "Dangerous '+all' mechanism authorizes ANY IP on the internet to spoof this domain.",
+      });
     } else if (lastToken === "-all" || lastToken === "~all") {
       checks.push({ level: "pass", message: `Terminates cleanly with '${lastToken}'.` });
     } else if (!lower.includes("redirect=")) {
@@ -373,19 +973,7 @@ export function lintDnsRecord(
       });
     }
   } else if (detected === "DMARC") {
-    const tags = trimmed
-      .split(";")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const map = new Map<string, string>();
-    for (const tag of tags) {
-      const idx = tag.indexOf("=");
-      if (idx === -1) {
-        checks.push({ level: "fail", message: `Malformed DMARC tag without '=': '${tag}'.` });
-      } else {
-        map.set(tag.slice(0, idx).trim().toLowerCase(), tag.slice(idx + 1).trim());
-      }
-    }
+    const map = parseSemicolonTags(trimmed, checks);
 
     if (map.get("v")?.toUpperCase() !== "DMARC1") {
       checks.push({ level: "fail", message: "DMARC record must start with 'v=DMARC1'." });
@@ -395,7 +983,10 @@ export function lintDnsRecord(
 
     const policy = map.get("p")?.toLowerCase();
     if (!policy || !["none", "quarantine", "reject"].includes(policy)) {
-      checks.push({ level: "fail", message: "Missing or invalid required 'p=' policy (must be none, quarantine, or reject)." });
+      checks.push({
+        level: "fail",
+        message: "Missing or invalid required 'p=' policy (must be none, quarantine, or reject).",
+      });
     } else if (policy === "none") {
       checks.push({ level: "warn", message: "'p=none' is monitoring-only and does not block spoofing." });
     } else {
@@ -427,26 +1018,161 @@ export function lintDnsRecord(
     } else if (!pMatch[1]) {
       checks.push({ level: "warn", message: "Empty 'p=' value indicates a revoked DKIM selector key." });
     } else if (pMatch[1].length < 160 && !lower.includes("k=ed25519")) {
-      checks.push({ level: "warn", message: "RSA DKIM public key looks short (prefer >= 2048-bit key for modern deliverability)." });
+      checks.push({
+        level: "warn",
+        message: "RSA DKIM public key looks short (prefer >= 2048-bit key for modern deliverability).",
+      });
     } else {
       checks.push({ level: "pass", message: "DKIM public key ('p=') is present." });
     }
   } else if (detected === "CAA") {
     const match = trimmed.match(/^(\d+)\s+(issue|issuewild|iodef)\s+"?([^"]+)"?$/i);
     if (!match) {
-      checks.push({ level: "fail", message: "Expected CAA syntax: <flags> <issue|issuewild|iodef> \"<value>\"." });
+      checks.push({
+        level: "fail",
+        message: 'Expected CAA syntax: <flags> <issue|issuewild|iodef> "<value>".',
+      });
     } else {
       const flags = Number(match[1]);
       if (flags !== 0 && flags !== 128) {
         checks.push({ level: "warn", message: `Unusual CAA flag '${flags}' (standard is 0 or 128).` });
       } else {
-        checks.push({ level: "pass", message: `Valid CAA ${match[2].toLowerCase()} directive for "${match[3]}".` });
+        checks.push({
+          level: "pass",
+          message: `Valid CAA ${match[2].toLowerCase()} directive for "${match[3]}".`,
+        });
+      }
+    }
+  } else if (detected === "MTA-STS") {
+    const map = parseSemicolonTags(trimmed, checks);
+    if (map.get("v") !== "STSv1") {
+      checks.push({ level: "fail", message: "MTA-STS DNS record must include exact 'v=STSv1' tag." });
+    } else {
+      checks.push({ level: "pass", message: "Valid 'v=STSv1' version tag." });
+    }
+    const id = map.get("id");
+    if (!id) {
+      checks.push({ level: "fail", message: "Missing required 'id=' policy version identifier." });
+    } else if (!/^[a-zA-Z0-9]{1,32}$/.test(id)) {
+      checks.push({
+        level: "fail",
+        message: `Invalid 'id=${id}': must be 1–32 alphanumeric characters per RFC 8461.`,
+      });
+    } else {
+      checks.push({ level: "pass", message: `Valid alphanumeric policy ID '${id}'.` });
+    }
+  } else if (detected === "TLS-RPT") {
+    const map = parseSemicolonTags(trimmed, checks);
+    if (map.get("v") !== "TLSRPTv1") {
+      checks.push({ level: "fail", message: "TLS-RPT record must begin with exact 'v=TLSRPTv1'." });
+    } else {
+      checks.push({ level: "pass", message: "Valid 'v=TLSRPTv1' version tag." });
+    }
+    const rua = map.get("rua");
+    if (!rua) {
+      checks.push({ level: "fail", message: "Missing required 'rua=' reporting URI." });
+    } else {
+      const uris = rua
+        .split(",")
+        .map((u) => u.trim())
+        .filter(Boolean);
+      const invalidUris = uris.filter(
+        (u) => !u.toLowerCase().startsWith("mailto:") && !u.toLowerCase().startsWith("https://"),
+      );
+      if (invalidUris.length > 0) {
+        checks.push({
+          level: "fail",
+          message: `Invalid TLS-RPT rua URI(s): ${invalidUris.join(", ")} (must use mailto: or https://).`,
+        });
+      } else {
+        checks.push({ level: "pass", message: `Valid TLS-RPT destination(s): ${uris.join(", ")}` });
+      }
+    }
+  } else if (detected === "BIMI") {
+    const map = parseSemicolonTags(trimmed, checks);
+    if (map.get("v") !== "BIMI1") {
+      checks.push({ level: "fail", message: "BIMI record must include exact 'v=BIMI1' tag." });
+    } else {
+      checks.push({ level: "pass", message: "Valid 'v=BIMI1' version tag." });
+    }
+    const logo = map.get("l");
+    if (!logo) {
+      checks.push({ level: "warn", message: "Empty or missing 'l=' SVG logo URL (declines BIMI display)." });
+    } else if (!logo.toLowerCase().startsWith("https://")) {
+      checks.push({ level: "fail", message: "'l=' logo URL must use https://." });
+    } else if (!logo.toLowerCase().includes(".svg")) {
+      checks.push({ level: "warn", message: "'l=' logo URL should point to an .svg (SVG Tiny P/S) image." });
+    } else {
+      checks.push({ level: "pass", message: `HTTPS SVG logo configured: ${logo}` });
+    }
+    const authority = map.get("a");
+    if (!authority) {
+      checks.push({ level: "warn", message: "No 'a=' VMC/CMC certificate URL — required by Gmail and Apple Mail." });
+    } else if (!authority.toLowerCase().startsWith("https://")) {
+      checks.push({ level: "fail", message: "'a=' authority certificate URL must use https://." });
+    } else {
+      checks.push({ level: "pass", message: `Authority certificate configured: ${authority}` });
+    }
+  } else if (detected === "TLSA") {
+    const match = trimmed.match(/^(\d+)\s+(\d+)\s+(\d+)\s+([0-9a-fA-F]+)$/);
+    if (!match) {
+      checks.push({
+        level: "fail",
+        message: "Expected TLSA syntax: <usage 0-3> <selector 0-1> <matching-type 0-2> <hex-data>.",
+      });
+    } else {
+      const usage = Number(match[1]);
+      const selector = Number(match[2]);
+      const matching = Number(match[3]);
+      const hex = match[4];
+
+      if (usage < 0 || usage > 3) {
+        checks.push({ level: "fail", message: `Invalid TLSA usage '${usage}' (must be 0–3).` });
+      } else {
+        const usageNames = ["PKIX-TA (0)", "PKIX-EE (1)", "DANE-TA (2)", "DANE-EE (3)"];
+        checks.push({ level: "pass", message: `Usage: ${usageNames[usage]}.` });
+      }
+
+      if (selector !== 0 && selector !== 1) {
+        checks.push({ level: "fail", message: `Invalid TLSA selector '${selector}' (must be 0=Cert or 1=SPKI).` });
+      } else {
+        checks.push({
+          level: "pass",
+          message: `Selector: ${selector === 0 ? "Full Certificate (0)" : "SubjectPublicKeyInfo (1)"}.`,
+        });
+      }
+
+      if (matching === 1) {
+        if (hex.length !== 64) {
+          checks.push({
+            level: "fail",
+            message: `Matching type 1 (SHA-256) expects 64 hex characters, got ${hex.length}.`,
+          });
+        } else {
+          checks.push({ level: "pass", message: "Valid 64-char SHA-256 hex digest." });
+        }
+      } else if (matching === 2) {
+        if (hex.length !== 128) {
+          checks.push({
+            level: "fail",
+            message: `Matching type 2 (SHA-512) expects 128 hex characters, got ${hex.length}.`,
+          });
+        } else {
+          checks.push({ level: "pass", message: "Valid 128-char SHA-512 hex digest." });
+        }
+      } else if (matching === 0) {
+        checks.push({
+          level: "warn",
+          message: "Matching type 0 (exact full DER) produces very large DNS responses; prefer 1 (SHA-256).",
+        });
+      } else {
+        checks.push({ level: "fail", message: `Invalid TLSA matching type '${matching}' (must be 0, 1, or 2).` });
       }
     }
   } else {
     checks.push({
       level: "warn",
-      message: "Could not auto-detect record type (select SPF, DMARC, DKIM, or CAA explicitly).",
+      message: "Could not auto-detect record type (select SPF, DMARC, DKIM, CAA, MTA-STS, TLS-RPT, BIMI, or TLSA explicitly).",
     });
   }
 

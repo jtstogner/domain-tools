@@ -15,28 +15,50 @@ import type { DnsTraceReport } from "../types/dns";
 
 interface DnsTracePanelProps {
   domain: string;
+  initialTraces?: Record<string, DnsTraceReport>;
+  onTraceResult?: (recordType: string, report: DnsTraceReport) => void;
   onNotify: (msg: string) => void;
 }
 
 const TRACE_RECORD_TYPES = ["A", "AAAA", "MX", "NS", "TXT", "SOA", "CAA"] as const;
 
-export function DnsTracePanel({ domain, onNotify }: DnsTracePanelProps) {
-  const [recordType, setRecordType] = useState<string>("A");
+export function DnsTracePanel({
+  domain,
+  initialTraces,
+  onTraceResult,
+  onNotify,
+}: DnsTracePanelProps) {
+  const [recordType, setRecordType] = useState<string>(() => {
+    const firstCachedKey = initialTraces ? Object.keys(initialTraces)[0] : undefined;
+    return firstCachedKey || "A";
+  });
   const [loading, setLoading] = useState(false);
-  const [report, setReport] = useState<DnsTraceReport | null>(null);
+  const [tracesByType, setTracesByType] = useState<Record<string, DnsTraceReport>>(
+    () => initialTraces ?? {},
+  );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    setReport(null);
+    const nextTraces = initialTraces ?? {};
+    setTracesByType(nextTraces);
     setError(null);
-  }, [domain]);
+    if (!nextTraces[recordType]) {
+      const firstKey = Object.keys(nextTraces)[0];
+      if (firstKey) {
+        setRecordType(firstKey);
+      }
+    }
+  }, [domain, initialTraces]);
+
+  const report = tracesByType[recordType] ?? null;
 
   const handleRunTrace = async () => {
     setLoading(true);
     setError(null);
     try {
       const res = await runDnsTrace(domain, recordType);
-      setReport(res);
+      setTracesByType((prev) => ({ ...prev, [recordType]: res }));
+      onTraceResult?.(recordType, res);
     } catch (err) {
       setError(String(err));
     } finally {

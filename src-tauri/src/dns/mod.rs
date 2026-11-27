@@ -4,10 +4,13 @@ pub mod email_probe;
 pub mod health;
 pub mod monitor;
 pub mod network;
+pub mod pem;
 pub mod ports;
 pub mod redirects;
+pub mod robots;
 pub mod security;
 pub mod subdomains;
+pub mod tld;
 pub mod tls;
 pub mod trace;
 pub mod traceroute;
@@ -25,6 +28,9 @@ use hickory_resolver::config::{
     NameServerConfigGroup, ResolveHosts, ResolverConfig, ResolverOpts,
 };
 use hickory_resolver::name_server::TokioConnectionProvider;
+use hickory_resolver::proto::dnssec::rdata::DNSSECRData;
+use hickory_resolver::proto::dnssec::PublicKey;
+use hickory_resolver::proto::rr::rdata::{sshfp, SVCB};
 use hickory_resolver::proto::rr::{RData, Record, RecordType};
 use hickory_resolver::{ResolveError, Resolver, TokioResolver};
 
@@ -109,6 +115,14 @@ pub fn parse_record_type(name: &str) -> Result<RecordType, String> {
         "SOA" => Ok(RecordType::SOA),
         "CAA" => Ok(RecordType::CAA),
         "SRV" => Ok(RecordType::SRV),
+        "HTTPS" => Ok(RecordType::HTTPS),
+        "SVCB" => Ok(RecordType::SVCB),
+        "PTR" => Ok(RecordType::PTR),
+        "TLSA" => Ok(RecordType::TLSA),
+        "SSHFP" => Ok(RecordType::SSHFP),
+        "NAPTR" => Ok(RecordType::NAPTR),
+        "DNSKEY" => Ok(RecordType::DNSKEY),
+        "DS" => Ok(RecordType::DS),
         other => Err(format!("Unsupported record type '{other}'.")),
     }
 }
@@ -172,6 +186,42 @@ pub fn build_resolver(
             apply_standard_opts(builder.options_mut(), validate_dnssec);
             Ok(("Quad9".to_string(), "9.9.9.9".to_string(), builder.build()))
         }
+        "cloudflare_doh" => {
+            let mut builder = Resolver::builder_with_config(
+                ResolverConfig::cloudflare_https(),
+                TokioConnectionProvider::default(),
+            );
+            apply_standard_opts(builder.options_mut(), validate_dnssec);
+            Ok((
+                "Cloudflare DoH".to_string(),
+                "https://1.1.1.1/dns-query".to_string(),
+                builder.build(),
+            ))
+        }
+        "google_doh" => {
+            let mut builder = Resolver::builder_with_config(
+                ResolverConfig::google_https(),
+                TokioConnectionProvider::default(),
+            );
+            apply_standard_opts(builder.options_mut(), validate_dnssec);
+            Ok((
+                "Google DoH".to_string(),
+                "https://dns.google/dns-query".to_string(),
+                builder.build(),
+            ))
+        }
+        "quad9_dot" => {
+            let mut builder = Resolver::builder_with_config(
+                ResolverConfig::quad9_tls(),
+                TokioConnectionProvider::default(),
+            );
+            apply_standard_opts(builder.options_mut(), validate_dnssec);
+            Ok((
+                "Quad9 DoT".to_string(),
+                "tls://9.9.9.9:853".to_string(),
+                builder.build(),
+            ))
+        }
         "system" => {
             let mut builder = Resolver::builder_tokio()
                 .map_err(|e| format!("Failed to load system DNS config: {e}"))?;
@@ -214,6 +264,52 @@ pub fn txt_to_string(txt: &hickory_resolver::proto::rr::rdata::TXT) -> String {
         .join("")
 }
 
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn format_svcb_rdata(svcb: &SVCB) -> (String, Option<serde_json::Value>) {
+    let priority = svcb.svc_priority();
+    let target = svcb.target_name().to_string();
+    let mode = if priority == 0 { "alias" } else { "service" };
+    let mut params = serde_json::Map::new();
+    for (k, v) in svcb.svc_params() {
+        let key_str = k.to_string();
+        let val_str = v.to_string();
+        params.insert(key_str, serde_json::Value::String(val_str));
+    }
+    (
+        svcb.to_string(),
+        Some(serde_json::json!({
+            "priority": priority,
+            "target": target,
+            "mode": mode,
+            "params": params,
+        })),
+    )
+}
+
+fn sshfp_algorithm_label(alg: sshfp::Algorithm) -> String {
+    match alg {
+        sshfp::Algorithm::Reserved => "Reserved".to_string(),
+        sshfp::Algorithm::RSA => "RSA".to_string(),
+        sshfp::Algorithm::DSA => "DSA".to_string(),
+        sshfp::Algorithm::ECDSA => "ECDSA".to_string(),
+        sshfp::Algorithm::Ed25519 => "Ed25519".to_string(),
+        sshfp::Algorithm::Ed448 => "Ed448".to_string(),
+        sshfp::Algorithm::Unassigned(n) => format!("Unassigned ({n})"),
+    }
+}
+
+fn sshfp_fp_type_label(fp: sshfp::FingerprintType) -> String {
+    match fp {
+        sshfp::FingerprintType::Reserved => "Reserved".to_string(),
+        sshfp::FingerprintType::SHA1 => "SHA-1".to_string(),
+        sshfp::FingerprintType::SHA256 => "SHA-256".to_string(),
+        sshfp::FingerprintType::Unassigned(n) => format!("Unassigned ({n})"),
+    }
+}
+
 pub fn format_record(record: &Record) -> DnsRecordItem {
     let name = record.name().to_string().trim_end_matches('.').to_string();
     let record_type = record.record_type().to_string();
@@ -225,6 +321,7 @@ pub fn format_record(record: &Record) -> DnsRecordItem {
         RData::AAAA(aaaa) => (aaaa.0.to_string(), None),
         RData::CNAME(cname) => (cname.0.to_string(), None),
         RData::NS(ns) => (ns.0.to_string(), None),
+        RData::PTR(ptr) => (ptr.0.to_string(), None),
         RData::MX(mx) => {
             let exchange = mx.exchange().to_string();
             let preference = mx.preference();
@@ -285,6 +382,108 @@ pub fn format_record(record: &Record) -> DnsRecordItem {
                     "weight": weight,
                     "port": port,
                     "target": target,
+                })),
+            )
+        }
+        RData::HTTPS(https) => format_svcb_rdata(&https.0),
+        RData::SVCB(svcb) => format_svcb_rdata(svcb),
+        RData::TLSA(tlsa) => {
+            let usage = u8::from(tlsa.cert_usage());
+            let selector = u8::from(tlsa.selector());
+            let matching_type = u8::from(tlsa.matching());
+            let cert_data = hex_lower(tlsa.cert_data());
+            (
+                format!("{usage} {selector} {matching_type} {cert_data}"),
+                Some(serde_json::json!({
+                    "usage": usage,
+                    "usage_label": security::dane_usage_label(usage),
+                    "selector": selector,
+                    "selector_label": security::dane_selector_label(selector),
+                    "matching_type": matching_type,
+                    "matching_type_label": security::dane_matching_label(matching_type),
+                    "cert_data": cert_data,
+                })),
+            )
+        }
+        RData::SSHFP(sshfp_rec) => {
+            let alg_code = u8::from(sshfp_rec.algorithm());
+            let alg_label = sshfp_algorithm_label(sshfp_rec.algorithm());
+            let fp_code = u8::from(sshfp_rec.fingerprint_type());
+            let fp_label = sshfp_fp_type_label(sshfp_rec.fingerprint_type());
+            let fingerprint = hex_lower(sshfp_rec.fingerprint());
+            (
+                format!("{alg_code} {fp_code} {fingerprint}"),
+                Some(serde_json::json!({
+                    "algorithm": alg_code,
+                    "algorithm_label": alg_label,
+                    "fp_type": fp_code,
+                    "fp_type_label": fp_label,
+                    "fingerprint": fingerprint,
+                })),
+            )
+        }
+        RData::NAPTR(naptr) => {
+            let order = naptr.order();
+            let preference = naptr.preference();
+            let flags = String::from_utf8_lossy(naptr.flags()).into_owned();
+            let services = String::from_utf8_lossy(naptr.services()).into_owned();
+            let regexp = String::from_utf8_lossy(naptr.regexp()).into_owned();
+            let replacement = naptr.replacement().to_string();
+            (
+                format!("{order} {preference} \"{flags}\" \"{services}\" \"{regexp}\" {replacement}"),
+                Some(serde_json::json!({
+                    "order": order,
+                    "preference": preference,
+                    "flags": flags,
+                    "services": services,
+                    "regexp": regexp,
+                    "replacement": replacement,
+                })),
+            )
+        }
+        RData::DNSSEC(DNSSECRData::DS(ds)) => {
+            let key_tag = ds.key_tag();
+            let alg_code = u8::from(ds.algorithm());
+            let alg_label = ds.algorithm().to_string();
+            let digest_code = u8::from(ds.digest_type());
+            let digest_label = format!("{:?}", ds.digest_type());
+            let digest = hex_lower(ds.digest());
+            (
+                format!("{key_tag} {alg_code} {digest_code} {digest}"),
+                Some(serde_json::json!({
+                    "key_tag": key_tag,
+                    "algorithm": alg_label,
+                    "algorithm_code": alg_code,
+                    "digest_type": digest_label,
+                    "digest_type_code": digest_code,
+                    "digest": digest,
+                })),
+            )
+        }
+        RData::DNSSEC(DNSSECRData::DNSKEY(key)) => {
+            let flags = key.flags();
+            let protocol: u8 = 3;
+            let alg_code = u8::from(key.public_key().algorithm());
+            let alg_label = key.public_key().algorithm().to_string();
+            let role = if key.is_key_signing_key() {
+                "KSK"
+            } else if key.zone_key() {
+                "ZSK"
+            } else {
+                "Key"
+            };
+            let revoked = key.revoke();
+            let key_tag = key.calculate_key_tag().ok();
+            (
+                key.to_string(),
+                Some(serde_json::json!({
+                    "flags": flags,
+                    "protocol": protocol,
+                    "algorithm": alg_label,
+                    "algorithm_code": alg_code,
+                    "role": role,
+                    "revoked": revoked,
+                    "key_tag": key_tag,
                 })),
             )
         }
@@ -932,5 +1131,194 @@ mod tests {
         )
         .await;
         assert!(bad_type.is_err());
+    }
+
+    #[test]
+    fn test_parse_record_type_extended_and_defaults() {
+        assert_eq!(DEFAULT_RECORD_TYPES.len(), 9);
+        for (name, expected) in [
+            ("A", RecordType::A),
+            ("AAAA", RecordType::AAAA),
+            ("CNAME", RecordType::CNAME),
+            ("MX", RecordType::MX),
+            ("TXT", RecordType::TXT),
+            ("NS", RecordType::NS),
+            ("SOA", RecordType::SOA),
+            ("CAA", RecordType::CAA),
+            ("SRV", RecordType::SRV),
+            ("HTTPS", RecordType::HTTPS),
+            ("SVCB", RecordType::SVCB),
+            ("PTR", RecordType::PTR),
+            ("TLSA", RecordType::TLSA),
+            ("SSHFP", RecordType::SSHFP),
+            ("NAPTR", RecordType::NAPTR),
+            ("DNSKEY", RecordType::DNSKEY),
+            ("DS", RecordType::DS),
+        ] {
+            assert_eq!(parse_record_type(name).unwrap(), expected);
+            assert_eq!(parse_record_type(&name.to_ascii_lowercase()).unwrap(), expected);
+        }
+        assert!(parse_record_type("UNKNOWNTYPE").is_err());
+    }
+
+    #[test]
+    fn test_build_encrypted_resolvers() {
+        let (label, addr, resolver) = build_resolver("cloudflare_doh", None, false).unwrap();
+        assert_eq!(label, "Cloudflare DoH");
+        assert_eq!(addr, "https://1.1.1.1/dns-query");
+        assert_eq!(resolver.options().cache_size, 0);
+
+        let (label, addr, resolver) = build_resolver("google_doh", None, false).unwrap();
+        assert_eq!(label, "Google DoH");
+        assert_eq!(addr, "https://dns.google/dns-query");
+        assert_eq!(resolver.options().cache_size, 0);
+
+        let (label, addr, resolver) = build_resolver("quad9_dot", None, false).unwrap();
+        assert_eq!(label, "Quad9 DoT");
+        assert_eq!(addr, "tls://9.9.9.9:853");
+        assert_eq!(resolver.options().cache_size, 0);
+    }
+
+    #[test]
+    fn test_format_record_extended_types() {
+        use hickory_resolver::proto::dnssec::rdata::{DNSKEY, DS};
+        use hickory_resolver::proto::dnssec::{Algorithm as DnssecAlg, DigestType, PublicKeyBuf};
+        use hickory_resolver::proto::rr::rdata::svcb::{Alpn, SvcParamKey, SvcParamValue};
+        use hickory_resolver::proto::rr::rdata::{HTTPS, NAPTR, PTR, SSHFP, TLSA};
+        use hickory_resolver::proto::rr::Name;
+        use std::str::FromStr;
+
+        let owner = Name::from_str("example.com.").unwrap();
+
+        // PTR
+        let ptr_rec = Record::from_rdata(
+            Name::from_str("1.1.1.1.in-addr.arpa.").unwrap(),
+            300,
+            RData::PTR(PTR(Name::from_str("one.one.one.one.").unwrap())),
+        );
+        let ptr_item = format_record(&ptr_rec);
+        assert_eq!(ptr_item.record_type, "PTR");
+        assert_eq!(ptr_item.value, "one.one.one.one.");
+
+        // HTTPS / SVCB
+        let svcb = SVCB::new(
+            1,
+            Name::root(),
+            vec![(
+                SvcParamKey::Alpn,
+                SvcParamValue::Alpn(Alpn(vec!["h3".to_string(), "h2".to_string()])),
+            )],
+        );
+        let https_rec = Record::from_rdata(owner.clone(), 300, RData::HTTPS(HTTPS(svcb.clone())));
+        let https_item = format_record(&https_rec);
+        assert_eq!(https_item.record_type, "HTTPS");
+        let https_details = https_item.details.unwrap();
+        assert_eq!(https_details["priority"], 1);
+        assert_eq!(https_details["mode"], "service");
+        assert!(https_details["params"].get("alpn").is_some());
+
+        let svcb_rec = Record::from_rdata(owner.clone(), 300, RData::SVCB(svcb));
+        let svcb_item = format_record(&svcb_rec);
+        assert_eq!(svcb_item.record_type, "SVCB");
+        assert_eq!(svcb_item.details.unwrap()["priority"], 1);
+
+        // TLSA
+        let tlsa_rec = Record::from_rdata(
+            owner.clone(),
+            300,
+            RData::TLSA(TLSA::new(
+                3u8.into(),
+                1u8.into(),
+                1u8.into(),
+                vec![0xab, 0xcd, 0xef],
+            )),
+        );
+        let tlsa_item = format_record(&tlsa_rec);
+        assert_eq!(tlsa_item.value, "3 1 1 abcdef");
+        let tlsa_details = tlsa_item.details.unwrap();
+        assert_eq!(tlsa_details["usage"], 3);
+        assert_eq!(tlsa_details["selector"], 1);
+        assert_eq!(tlsa_details["matching_type"], 1);
+        assert_eq!(tlsa_details["cert_data"], "abcdef");
+
+        // SSHFP
+        let sshfp_rec = Record::from_rdata(
+            owner.clone(),
+            300,
+            RData::SSHFP(SSHFP::new(
+                sshfp::Algorithm::Ed25519,
+                sshfp::FingerprintType::SHA256,
+                vec![0x01, 0x23, 0x45],
+            )),
+        );
+        let sshfp_item = format_record(&sshfp_rec);
+        assert_eq!(sshfp_item.value, "4 2 012345");
+        let sshfp_details = sshfp_item.details.unwrap();
+        assert_eq!(sshfp_details["algorithm"], 4);
+        assert_eq!(sshfp_details["algorithm_label"], "Ed25519");
+        assert_eq!(sshfp_details["fp_type"], 2);
+        assert_eq!(sshfp_details["fp_type_label"], "SHA-256");
+        assert_eq!(sshfp_details["fingerprint"], "012345");
+
+        // NAPTR
+        let naptr_rec = Record::from_rdata(
+            owner.clone(),
+            300,
+            RData::NAPTR(NAPTR::new(
+                100,
+                10,
+                b"S".to_vec().into_boxed_slice(),
+                b"SIP+D2U".to_vec().into_boxed_slice(),
+                b"".to_vec().into_boxed_slice(),
+                Name::from_str("_sip._udp.example.com.").unwrap(),
+            )),
+        );
+        let naptr_item = format_record(&naptr_rec);
+        assert_eq!(
+            naptr_item.value,
+            "100 10 \"S\" \"SIP+D2U\" \"\" _sip._udp.example.com."
+        );
+        let naptr_details = naptr_item.details.unwrap();
+        assert_eq!(naptr_details["order"], 100);
+        assert_eq!(naptr_details["preference"], 10);
+        assert_eq!(naptr_details["flags"], "S");
+
+        // DS
+        let ds_rec = Record::from_rdata(
+            owner.clone(),
+            300,
+            RData::DNSSEC(DNSSECRData::DS(DS::new(
+                2371,
+                DnssecAlg::ECDSAP256SHA256,
+                DigestType::SHA256,
+                vec![0xde, 0xad, 0xbe, 0xef],
+            ))),
+        );
+        let ds_item = format_record(&ds_rec);
+        assert_eq!(ds_item.value, "2371 13 2 deadbeef");
+        let ds_details = ds_item.details.unwrap();
+        assert_eq!(ds_details["key_tag"], 2371);
+        assert_eq!(ds_details["algorithm_code"], 13);
+        assert_eq!(ds_details["digest_type_code"], 2);
+        assert_eq!(ds_details["digest"], "deadbeef");
+
+        // DNSKEY
+        let dnskey_rec = Record::from_rdata(
+            owner,
+            300,
+            RData::DNSSEC(DNSSECRData::DNSKEY(DNSKEY::new(
+                true,
+                true,
+                false,
+                PublicKeyBuf::new(vec![1u8; 64], DnssecAlg::ECDSAP256SHA256),
+            ))),
+        );
+        let dnskey_item = format_record(&dnskey_rec);
+        assert_eq!(dnskey_item.record_type, "DNSKEY");
+        let dnskey_details = dnskey_item.details.unwrap();
+        assert_eq!(dnskey_details["flags"], 257);
+        assert_eq!(dnskey_details["protocol"], 3);
+        assert_eq!(dnskey_details["role"], "KSK");
+        assert_eq!(dnskey_details["algorithm_code"], 13);
     }
 }

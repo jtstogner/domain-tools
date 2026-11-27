@@ -8,10 +8,15 @@ import type {
   DnsTraceReport,
   MonitorProbeRequest,
   MonitorProbeResult,
+  PemDecodeReport,
   PortScanReport,
   QueryRequest,
   RedirectReport,
+  RobotsFetchResult,
+  SecurityReport,
   SmtpDeliverabilityReport,
+  StandaloneDnsblReport,
+  TldAvailabilityReport,
   TlsReport,
   TracerouteReport,
   TyposquatReport,
@@ -101,6 +106,38 @@ export async function scanTyposquats(domain: string): Promise<TyposquatReport> {
 
 export async function runTraceroute(target: string): Promise<TracerouteReport> {
   return invoke<TracerouteReport>("run_traceroute", { target });
+}
+
+export async function recheckSecurity(
+  domain: string,
+  dkimSelectors: string[],
+): Promise<SecurityReport> {
+  return invoke<SecurityReport>("recheck_security", {
+    domain,
+    dkimSelectors,
+  });
+}
+
+export async function checkDnsbl(target: string): Promise<StandaloneDnsblReport> {
+  return invoke<StandaloneDnsblReport>("check_dnsbl", { target });
+}
+
+export async function checkTldAvailability(
+  baseName: string,
+  tlds?: string[],
+): Promise<TldAvailabilityReport> {
+  return invoke<TldAvailabilityReport>("check_tld_availability", {
+    baseName,
+    tlds: tlds && tlds.length > 0 ? tlds : null,
+  });
+}
+
+export async function fetchRobotsTxt(domain: string): Promise<RobotsFetchResult> {
+  return invoke<RobotsFetchResult>("fetch_robots_txt", { domain });
+}
+
+export async function decodePem(pemText: string): Promise<PemDecodeReport> {
+  return invoke<PemDecodeReport>("decode_pem", { pemText });
 }
 
 export async function saveExport(

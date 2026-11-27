@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
 use futures::future::join_all;
@@ -12,11 +12,11 @@ use crate::dns::txt_to_string;
 use crate::dns::whois::extract_whois_domain;
 use crate::models::{
     BlacklistEntry, DomainHealthReport, HealthCheckItem, NetworkReport, PortScanReport,
-    PropagationRow, RedirectReport, ResolverResult, SecurityReport, SubdomainDiscoveryReport,
-    TlsReport, WebsiteInfo, WhoisInfo,
+    PropagationRow, RedirectReport, ResolverResult, SecurityReport, StandaloneDnsblReport,
+    SubdomainDiscoveryReport, TlsReport, WebsiteInfo, WhoisInfo,
 };
 
-const DOMAIN_BLACKLISTS: &[(&str, &str)] = &[
+pub(crate) const DOMAIN_BLACKLISTS: &[(&str, &str)] = &[
     ("Spamhaus DBL", "dbl.spamhaus.org"),
     ("SURBL Multi", "multi.surbl.org"),
     ("URIBL Multi", "multi.uribl.com"),
@@ -25,7 +25,7 @@ const DOMAIN_BLACKLISTS: &[(&str, &str)] = &[
     ("SpamEatingMonkey Fresh", "fresh.spameatingmonkey.net"),
 ];
 
-const IP_BLACKLISTS: &[(&str, &str)] = &[
+pub(crate) const IP_BLACKLISTS: &[(&str, &str)] = &[
     ("Spamhaus ZEN", "zen.spamhaus.org"),
     ("SpamCop", "bl.spamcop.net"),
     ("SpamEatingMonkey BL", "bl.spameatingmonkey.net"),
@@ -65,7 +65,7 @@ pub fn reverse_ipv4(ip: Ipv4Addr) -> String {
     format!("{d}.{c}.{b}.{a}")
 }
 
-fn build_dnsbl_resolver() -> Result<TokioResolver, String> {
+pub(crate) fn build_dnsbl_resolver() -> Result<TokioResolver, String> {
     let mut builder = match Resolver::builder_tokio() {
         Ok(b) => b,
         Err(_) => Resolver::builder_with_config(
@@ -258,7 +258,7 @@ pub fn interpret_dnsbl_codes(zone: &str, codes: &[Ipv4Addr]) -> (&'static str, O
     ("clean", None)
 }
 
-async fn query_dnsbl_entry(
+pub(crate) async fn query_dnsbl_entry(
     resolver: &TokioResolver,
     list_name: &str,
     zone: &str,
@@ -558,6 +558,134 @@ pub async fn run_blacklist_checks(domain: &str, resolvers: &[ResolverResult]) ->
         mx_hosts,
         caa_records,
     }
+}
+
+pub fn classify_dnsbl_target(target: &str) -> Result<(String, String), String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Err("Please enter an IPv4 address or domain name.".to_string());
+    }
+    if let Ok(ip) = trimmed.parse::<Ipv4Addr>() {
+        return Ok((ip.to_string(), "ip".to_string()));
+    }
+    if trimmed.parse::<IpAddr>().is_ok() {
+        return Err(
+            "DNSBL lookups currently support IPv4 addresses and domain names (IPv6 is not supported by most DNSBLs)."
+                .to_string(),
+        );
+    }
+    let normalized = crate::dns::normalize_domain(trimmed)?;
+    Ok((normalized, "domain".to_string()))
+}
+
+pub async fn check_standalone_dnsbl(target: &str) -> Result<StandaloneDnsblReport, String> {
+    let started = Instant::now();
+    let (normalized_target, target_kind) = classify_dnsbl_target(target)?;
+    let dnsbl_resolver = build_dnsbl_resolver()?;
+
+    if target_kind == "ip" {
+        let ip: Ipv4Addr = normalized_target
+            .parse()
+            .map_err(|_| format!("Invalid IPv4 address '{normalized_target}'."))?;
+        let rev = reverse_ipv4(ip);
+        let ip_str = ip.to_string();
+
+        let futs = IP_BLACKLISTS.iter().map(|(name, zone)| {
+            let q = format!("{rev}.{zone}.");
+            query_dnsbl_entry(
+                &dnsbl_resolver,
+                name,
+                zone,
+                ip_str.clone(),
+                "IP".to_string(),
+                q,
+            )
+        });
+        let entries = join_all(futs).await;
+        let checked_count = entries.len();
+        let listed_count = entries.iter().filter(|e| e.status == "listed").count();
+        let blocked_count = entries.iter().filter(|e| e.status == "blocked").count();
+
+        return Ok(StandaloneDnsblReport {
+            target: ip_str.clone(),
+            target_kind,
+            resolved_ips: vec![ip_str],
+            checked_count,
+            listed_count,
+            blocked_count,
+            latency_ms: started.elapsed().as_millis() as u64,
+            entries,
+            error: None,
+        });
+    }
+
+    let apex_domain = extract_whois_domain(&normalized_target);
+    let fqdn = format!("{normalized_target}.");
+
+    let mut resolved_ips_v4: Vec<Ipv4Addr> = Vec::new();
+    if let Ok(lookup) = dnsbl_resolver.lookup(&fqdn, RecordType::A).await {
+        for rec in lookup.record_iter() {
+            if let RData::A(a) = rec.data() {
+                if !resolved_ips_v4.contains(&a.0) {
+                    resolved_ips_v4.push(a.0);
+                    if resolved_ips_v4.len() >= 2 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let resolved_ips: Vec<String> = resolved_ips_v4.iter().map(|ip| ip.to_string()).collect();
+
+    let domain_futs = DOMAIN_BLACKLISTS.iter().map(|(name, zone)| {
+        let q = format!("{apex_domain}.{zone}.");
+        query_dnsbl_entry(
+            &dnsbl_resolver,
+            name,
+            zone,
+            apex_domain.clone(),
+            "Domain".to_string(),
+            q,
+        )
+    });
+
+    let mut ip_futs = Vec::new();
+    for ip in &resolved_ips_v4 {
+        let rev = reverse_ipv4(*ip);
+        let ip_str = ip.to_string();
+        for (name, zone) in IP_BLACKLISTS {
+            let q = format!("{rev}.{zone}.");
+            ip_futs.push(query_dnsbl_entry(
+                &dnsbl_resolver,
+                name,
+                zone,
+                ip_str.clone(),
+                "Web IP (A)".to_string(),
+                q,
+            ));
+        }
+    }
+
+    let (domain_entries, ip_entries) = tokio::join!(join_all(domain_futs), join_all(ip_futs));
+    let mut entries = domain_entries;
+    entries.extend(ip_entries);
+
+    let checked_count = entries.len();
+    let listed_count = entries.iter().filter(|e| e.status == "listed").count();
+    let blocked_count = entries.iter().filter(|e| e.status == "blocked").count();
+
+    Ok(StandaloneDnsblReport {
+        target: normalized_target,
+        target_kind,
+        resolved_ips,
+        checked_count,
+        listed_count,
+        blocked_count,
+        latency_ms: started.elapsed().as_millis() as u64,
+        entries,
+        error: None,
+    })
 }
 
 fn infer_mail_provider_dkim(mx_hosts: &[String]) -> Option<(&'static str, &'static str, &'static str)> {
@@ -2512,5 +2640,26 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("letsencrypt.org"));
+    }
+
+    #[test]
+    fn test_classify_dnsbl_target() {
+        let (target, kind) = classify_dnsbl_target(" 192.0.2.42 ").unwrap();
+        assert_eq!(target, "192.0.2.42");
+        assert_eq!(kind, "ip");
+
+        let (target, kind) = classify_dnsbl_target("https://Example.COM/login").unwrap();
+        assert_eq!(target, "example.com");
+        assert_eq!(kind, "domain");
+
+        assert!(classify_dnsbl_target("").is_err());
+        assert!(classify_dnsbl_target("2001:db8::1").is_err());
+        assert!(classify_dnsbl_target("bad..domain").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_check_standalone_dnsbl_rejects_invalid() {
+        assert!(check_standalone_dnsbl("").await.is_err());
+        assert!(check_standalone_dnsbl("2001:db8::1").await.is_err());
     }
 }

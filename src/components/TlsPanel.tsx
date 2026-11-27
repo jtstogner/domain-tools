@@ -19,6 +19,8 @@ import type { CtHistoryReport, TlsReport } from "../types/dns";
 interface TlsPanelProps {
   tls: TlsReport;
   defaultHost: string;
+  initialCtHistory?: CtHistoryReport | null;
+  onCtHistoryResult?: (report: CtHistoryReport) => void;
   onNotify: (msg: string) => void;
 }
 
@@ -31,7 +33,13 @@ const PORT_PRESETS = [
   { label: "IMAPS (993)", port: 993, starttls: "none" },
 ];
 
-export function TlsPanel({ tls, defaultHost, onNotify }: TlsPanelProps) {
+export function TlsPanel({
+  tls,
+  defaultHost,
+  initialCtHistory,
+  onCtHistoryResult,
+  onNotify,
+}: TlsPanelProps) {
   const [subTab, setSubTab] = useState<"live" | "ct">("live");
   const [activeReport, setActiveReport] = useState<TlsReport>(tls);
   const [probeHost, setProbeHost] = useState(tls.host || defaultHost);
@@ -40,7 +48,9 @@ export function TlsPanel({ tls, defaultHost, onNotify }: TlsPanelProps) {
   const [probing, setProbing] = useState(false);
 
   const [ctLoading, setCtLoading] = useState(false);
-  const [ctReport, setCtReport] = useState<CtHistoryReport | null>(null);
+  const [ctReport, setCtReport] = useState<CtHistoryReport | null>(
+    () => initialCtHistory ?? null,
+  );
   const [ctError, setCtError] = useState<string | null>(null);
   const [ctFilter, setCtFilter] = useState<"all" | "active" | "expired" | "wildcard">("all");
   const [ctSearch, setCtSearch] = useState("");
@@ -50,9 +60,12 @@ export function TlsPanel({ tls, defaultHost, onNotify }: TlsPanelProps) {
     setProbeHost(tls.host || defaultHost);
     setProbePort(String(tls.port || 443));
     setProbeStarttls(tls.starttls ?? "auto");
-    setCtReport(null);
-    setCtError(null);
   }, [tls, defaultHost]);
+
+  useEffect(() => {
+    setCtReport(initialCtHistory ?? null);
+    setCtError(null);
+  }, [defaultHost, initialCtHistory]);
 
   const handleProbe = async (hostVal?: string, portVal?: number, stls?: string) => {
     const h = (hostVal ?? probeHost).trim();
@@ -76,6 +89,7 @@ export function TlsPanel({ tls, defaultHost, onNotify }: TlsPanelProps) {
     try {
       const res = await fetchCtHistory(defaultHost);
       setCtReport(res);
+      onCtHistoryResult?.(res);
     } catch (err) {
       setCtError(String(err));
     } finally {

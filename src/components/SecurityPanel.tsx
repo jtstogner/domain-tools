@@ -13,7 +13,7 @@ import {
   ShieldX,
   XCircle,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { copyToClipboard, probeSmtpDeliverability } from "../lib/api";
 import type {
   SecurityReport,
@@ -96,6 +96,9 @@ interface SecurityPanelProps {
   onDkimSelectorsInputChange: (v: string) => void;
   onRecheckDkim: () => void;
   loading: boolean;
+  recheckingDkim?: boolean;
+  initialSmtpReport?: SmtpDeliverabilityReport | null;
+  onSmtpResult?: (report: SmtpDeliverabilityReport) => void;
   onNotify: (msg: string) => void;
 }
 
@@ -106,14 +109,26 @@ export function SecurityPanel({
   onDkimSelectorsInputChange,
   onRecheckDkim,
   loading,
+  recheckingDkim,
+  initialSmtpReport,
+  onSmtpResult,
   onNotify,
 }: SecurityPanelProps) {
   const [localCopied, setLocalCopied] = useState<string | null>(null);
   const [showSpfTree, setShowSpfTree] = useState(false);
   const [showFlattenedSpf, setShowFlattenedSpf] = useState(false);
   const [smtpLoading, setSmtpLoading] = useState(false);
-  const [smtpReport, setSmtpReport] = useState<SmtpDeliverabilityReport | null>(null);
+  const [smtpReport, setSmtpReport] = useState<SmtpDeliverabilityReport | null>(
+    () => initialSmtpReport ?? null,
+  );
   const [smtpError, setSmtpError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSmtpReport(initialSmtpReport ?? null);
+    setSmtpError(null);
+  }, [domain, initialSmtpReport]);
+
+  const dkimBusy = Boolean(recheckingDkim || loading);
 
   const copyRaw = async (id: string, text: string) => {
     await copyToClipboard(text);
@@ -128,6 +143,7 @@ export function SecurityPanel({
     try {
       const res = await probeSmtpDeliverability(domain);
       setSmtpReport(res);
+      onSmtpResult?.(res);
     } catch (err) {
       setSmtpError(String(err));
     } finally {
@@ -390,17 +406,24 @@ export function SecurityPanel({
               type="text"
               value={dkimSelectorsInput}
               onChange={(e) => onDkimSelectorsInputChange(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !dkimBusy) {
+                  e.preventDefault();
+                  onRecheckDkim();
+                }
+              }}
               placeholder="Custom selectors (e.g. s1, google, mandrill)"
               className="flex-1 rounded-lg border border-line-strong bg-canvas px-3 py-1.5 font-mono text-xs text-ink placeholder:text-ink-muted/70 focus:border-sky-500 focus:outline-none"
             />
             <button
               type="button"
-              disabled={loading}
+              disabled={dkimBusy}
               onClick={onRecheckDkim}
+              title="Run targeted security & DKIM check without re-running full lookup"
               className="inline-flex items-center gap-1.5 rounded-lg border border-line-strong bg-surface-alt px-3 py-1.5 text-xs font-medium text-ink-secondary transition hover:border-sky-500/50 hover:text-sky-600 dark:hover:text-sky-300 disabled:opacity-50"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-              Check
+              <RefreshCw className={`h-3.5 w-3.5 ${dkimBusy ? "animate-spin" : ""}`} />
+              {recheckingDkim ? "Checking..." : "Check"}
             </button>
           </div>
 
